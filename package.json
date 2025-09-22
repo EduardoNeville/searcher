@@ -1,0 +1,42 @@
+{
+  "name": "searcher-application",
+  "version": "1.0.0",
+  "description": "Cross-platform file search application with Elasticsearch backend",
+  "main": "start-all.js",
+  "scripts": {
+    "start": "node start-all.js",
+    "start:dev": "node start-all.js --dev",
+    "start:build": "node start-all.js --build",
+    "start:no-watchdog": "node start-all.js --no-watchdog",
+    "start:no-opener": "node start-all.js --no-opener",
+    "help": "node start-all.js --help",
+    "backend": "cd backend && npm start",
+    "frontend": "cd frontend && npm run dev",
+    "watchdog": "cd backend && node watchdog.js",
+    "indexer": "cd backend && node indexer.js",
+    "test-docs": "cd backend && node test-documents.js",
+    "setup": "npm install && cd backend && npm install && cd ../frontend && npm install"
+  },
+  "keywords": [
+    "search",
+    "elasticsearch",
+    "file-search",
+    "docker",
+    "cross-platform",
+    "node.js",
+    "react"
+  ],
+  "author": "Searcher Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {
+    "chokidar": "^4.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "."
+  },
+  "dependencies": {}
+}
