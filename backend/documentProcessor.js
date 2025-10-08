@@ -164,9 +164,10 @@ class DocumentProcessor {
   }
 
   async extractPdfText(buffer) {
+    const originalStderrWrite = process.stderr.write;
+
     try {
       // Suppress pdf-parse warnings by temporarily redirecting stderr
-      const originalStderrWrite = process.stderr.write;
       const warnings = [];
 
       process.stderr.write = function(chunk, encoding, callback) {
@@ -224,13 +225,47 @@ class DocumentProcessor {
 
       return metadata + text;
     } catch (error) {
-      console.error('PDF extraction error:', error.message);
-      // Try alternative extraction method
+      // Always restore stderr before handling errors
+      process.stderr.write = originalStderrWrite;
+
+      // Check for specific pdf-parse internal errors
+      const errorMsg = error.message || '';
+      const errorStack = error.stack || '';
+
+      const isInternalError = errorMsg.includes('getBytes is not a function') ||
+                             errorMsg.includes('is not a function') ||
+                             errorMsg.includes('stream.') ||
+                             errorMsg.includes('DecodeStream') ||
+                             errorMsg.includes('StreamsSequenceStream') ||
+                             errorStack.includes('pdf.worker.js') ||
+                             errorStack.includes('Lexer') ||
+                             errorStack.includes('EvaluatorPreprocessor');
+
+      if (isInternalError) {
+        console.warn(`  ⚠️  PDF has internal structure issues, skipping extraction`);
+        return ''; // Return empty content for corrupted/incompatible PDFs
+      }
+
+      console.warn(`  ⚠️  PDF extraction error: ${error.message}`);
+
+      // Try alternative extraction method for other errors
       try {
+        console.log(`  🔄 Attempting fallback extraction (first 10 pages only)...`);
         const simpleData = await pdfParse(buffer, { max: 10 }); // Only first 10 pages
+        console.log(`  ✓ Fallback extraction succeeded`);
         return simpleData.text || '';
       } catch (fallbackError) {
-        console.error('PDF fallback extraction failed:', fallbackError.message);
+        const fallbackMsg = fallbackError.message || '';
+        const fallbackStack = fallbackError.stack || '';
+
+        const isFallbackInternalError = fallbackMsg.includes('is not a function') ||
+                                       fallbackStack.includes('pdf.worker.js');
+
+        if (isFallbackInternalError) {
+          console.warn(`  ⚠️  PDF incompatible with pdf-parse library, skipping`);
+        } else {
+          console.warn(`  ⚠️  Fallback extraction also failed: ${fallbackError.message}`);
+        }
         return '';
       }
     }
