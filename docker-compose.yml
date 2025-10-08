@@ -23,9 +23,11 @@ services:
     volumes:
       - ${HOME}:/home/user:ro  # Mount current user's home directory as read-only (Linux & macOS)
       - ${HOME}/.file_open_commands:/app/file_commands  # Writable directory for commands
+      - search_history_data:/app/data  # Persistent volume for search history database
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - HOST_HOME=${HOME}
+      - DB_DIR=/app/data
     depends_on:
       - elasticsearch
     networks:
@@ -33,6 +35,8 @@ services:
 
 volumes:
   elasticsearch_data:
+    driver: local
+  search_history_data:
     driver: local
 
 networks:

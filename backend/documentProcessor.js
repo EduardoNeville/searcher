@@ -78,11 +78,46 @@ class DocumentProcessor {
 
   async extractPdfText(buffer) {
     try {
+      // Suppress pdf-parse warnings by temporarily redirecting stderr
+      const originalStderrWrite = process.stderr.write;
+      const warnings = [];
+
+      process.stderr.write = function(chunk, encoding, callback) {
+        const str = chunk.toString();
+        // Only suppress known harmless warnings from pdf-parse
+        const harmlessWarnings = [
+          'Unknown command',
+          'Skipping command',
+          'TT: undefined function',
+          'TT: invalid function id',
+          'Required "glyf" table is not found',
+          'Required "loca" table is not found',
+          'FormatError: Required "loca" table is not found',
+          'Badly formatted number',
+          'Empty "FlateDecode" stream',
+          'Could not find a preferred cmap table'
+        ];
+
+        if (harmlessWarnings.some(warning => str.includes(warning))) {
+          warnings.push(str.trim());
+          return true;
+        }
+        return originalStderrWrite.apply(process.stderr, arguments);
+      };
+
       const data = await pdfParse(buffer, {
         // PDF parsing options for better text extraction
         max: 0, // Parse all pages
         version: 'v1.10.100' // Use specific version for consistency
       });
+
+      // Restore stderr
+      process.stderr.write = originalStderrWrite;
+
+      // Optionally log suppressed warnings count
+      if (warnings.length > 0) {
+        console.log(`  ℹ️  Suppressed ${warnings.length} PDF parsing warnings (non-standard commands)`);
+      }
 
       // Clean up the extracted text
       let text = data.text;

@@ -3,7 +3,6 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const chokidar = require('chokidar');
 const { Client } = require('@elastic/elasticsearch');
 const DocumentProcessor = require('./documentProcessor');
 
@@ -34,11 +33,16 @@ class FileWatchdog {
       'tmp', 'temp', '.tmp', '.DS_Store', 'Thumbs.db'
     ];
 
+    // File state tracking for polling-based monitoring
+    this.fileStates = new Map(); // path -> {mtime, size}
+    this.pollInterval = 30000; // Poll every 30 seconds
+    this.pollTimer = null;
+
     this.init();
   }
 
   async init() {
-    console.log('🐕 File Watchdog starting...');
+    console.log('🐕 File Watchdog starting (polling mode)...');
 
     // Wait for Elasticsearch to be ready
     await this.waitForElasticsearch();
@@ -46,10 +50,13 @@ class FileWatchdog {
     // Cold start - full reindex
     await this.coldStartIndexer();
 
-    // Start file system watcher
-    this.startFileWatcher();
+    // Build initial file state map
+    await this.buildFileStateMap();
 
-    console.log('🐕 Watchdog is now monitoring your files...');
+    // Start polling-based monitoring
+    this.startPollingMonitor();
+
+    console.log('🐕 Watchdog is now monitoring your files (polling every 30s)...');
   }
 
   async waitForElasticsearch() {
@@ -129,71 +136,193 @@ class FileWatchdog {
     });
   }
 
-  startFileWatcher() {
-    console.log('👁️  Starting file system watcher...');
+  async buildFileStateMap() {
+    console.log('📊 Building file state map...');
+    let fileCount = 0;
 
-    const watcher = chokidar.watch(this.watchedDirectories, {
-      persistent: true,
-      ignoreInitial: true,
-      followSymlinks: false,
-      depth: 10,
-      ignored: [
-        // Skip common uninteresting directories
-        new RegExp(`(${this.skipDirs.join('|')})`),
-        /\.git\//,
-        /node_modules\//,
-        /\.cache\//,
-        // Skip temporary files
-        /.*\.tmp$/,
-        /.*\.temp$/,
-        /.*~$/,
-        /.*\.swp$/,
-        /.*\.swo$/,
-        // Skip system files
-        /\.DS_Store$/,
-        /Thumbs\.db$/
-      ]
-    });
+    const walkDirectory = async (dirPath) => {
+      try {
+        const items = fs.readdirSync(dirPath);
 
-    // Handle file events
-    watcher
-      .on('add', (filePath) => this.handleFileChange('added', filePath))
-      .on('change', (filePath) => this.handleFileChange('changed', filePath))
-      .on('unlink', (filePath) => this.handleFileChange('removed', filePath))
-      .on('ready', () => {
-        console.log('👁️  File watcher is ready and monitoring changes');
-      })
-      .on('error', (error) => {
-        console.error('👁️  Watcher error:', error);
-      });
+        for (const item of items) {
+          // Skip hidden items
+          if (item.startsWith('.')) continue;
+
+          const fullPath = path.join(dirPath, item);
+
+          try {
+            const stats = fs.statSync(fullPath);
+
+            if (stats.isDirectory()) {
+              // Skip directories we don't care about
+              if (this.skipDirs.includes(item)) continue;
+
+              // Recursively walk subdirectories
+              await walkDirectory(fullPath);
+            } else if (stats.isFile() && this.shouldIndexFile(fullPath)) {
+              // Track file state
+              this.fileStates.set(fullPath, {
+                mtime: stats.mtimeMs,
+                size: stats.size
+              });
+              fileCount++;
+            }
+          } catch (err) {
+            // Skip files we can't access
+            continue;
+          }
+        }
+      } catch (err) {
+        // Skip directories we can't read
+        return;
+      }
+    };
+
+    await walkDirectory(this.baseDir);
+    console.log(`📊 Tracking ${fileCount} files`);
+  }
+
+  startPollingMonitor() {
+    console.log('🔄 Starting polling monitor...');
+
+    const pollFiles = async () => {
+      try {
+        await this.checkForChanges();
+      } catch (error) {
+        console.error('❌ Error during polling:', error.message);
+      }
+
+      // Schedule next poll
+      this.pollTimer = setTimeout(pollFiles, this.pollInterval);
+    };
+
+    // Start polling
+    pollFiles();
 
     // Graceful shutdown
     process.on('SIGINT', () => {
       console.log('\n🛑 Shutting down watchdog...');
-      watcher.close();
+      if (this.pollTimer) {
+        clearTimeout(this.pollTimer);
+      }
       process.exit(0);
     });
   }
 
-  handleFileChange(eventType, filePath) {
-    // Skip if not a file we care about
-    if (!this.shouldIndexFile(filePath)) {
-      return;
+  async checkForChanges() {
+    const changes = {
+      added: [],
+      modified: [],
+      removed: []
+    };
+
+    // Build current state
+    const currentFiles = new Set();
+
+    const walkDirectory = async (dirPath) => {
+      try {
+        const items = fs.readdirSync(dirPath);
+
+        for (const item of items) {
+          if (item.startsWith('.')) continue;
+
+          const fullPath = path.join(dirPath, item);
+
+          try {
+            const stats = fs.statSync(fullPath);
+
+            if (stats.isDirectory()) {
+              if (this.skipDirs.includes(item)) continue;
+              await walkDirectory(fullPath);
+            } else if (stats.isFile() && this.shouldIndexFile(fullPath)) {
+              currentFiles.add(fullPath);
+
+              const oldState = this.fileStates.get(fullPath);
+
+              if (!oldState) {
+                // New file
+                changes.added.push(fullPath);
+                this.fileStates.set(fullPath, {
+                  mtime: stats.mtimeMs,
+                  size: stats.size
+                });
+              } else if (oldState.mtime !== stats.mtimeMs || oldState.size !== stats.size) {
+                // Modified file
+                changes.modified.push(fullPath);
+                this.fileStates.set(fullPath, {
+                  mtime: stats.mtimeMs,
+                  size: stats.size
+                });
+              }
+            }
+          } catch (err) {
+            continue;
+          }
+        }
+      } catch (err) {
+        return;
+      }
+    };
+
+    await walkDirectory(this.baseDir);
+
+    // Check for removed files
+    for (const trackedPath of this.fileStates.keys()) {
+      if (!currentFiles.has(trackedPath)) {
+        changes.removed.push(trackedPath);
+        this.fileStates.delete(trackedPath);
+      }
     }
 
-    console.log(`📄 File ${eventType}: ${filePath}`);
+    // Process changes
+    const totalChanges = changes.added.length + changes.modified.length + changes.removed.length;
 
-    // Add to pending updates
-    this.pendingUpdates.add({ eventType, filePath });
+    if (totalChanges > 0) {
+      console.log(`🔄 Detected ${totalChanges} changes (${changes.added.length} added, ${changes.modified.length} modified, ${changes.removed.length} removed)`);
 
-    // Debounce updates - wait for 2 seconds of quiet before processing
-    if (this.updateTimeout) {
-      clearTimeout(this.updateTimeout);
+      // Process all changes
+      for (const filePath of changes.removed) {
+        await this.removeFileFromIndex(filePath);
+      }
+
+      for (const filePath of [...changes.added, ...changes.modified]) {
+        await this.indexSingleFile(filePath);
+      }
+
+      // Refresh index
+      await this.client.indices.refresh({ index: this.indexName });
+      console.log('✅ Changes processed');
+    }
+  }
+
+
+  chunkContent(content, chunkSize = 500000) {
+    // Split content into chunks with overlap for better search continuity
+    const chunks = [];
+    const overlapSize = 5000; // 5KB overlap between chunks
+
+    if (!content || content.length <= chunkSize) {
+      return [content || ''];
     }
 
-    this.updateTimeout = setTimeout(() => {
-      this.processPendingUpdates();
-    }, 2000);
+    let position = 0;
+    let chunkIndex = 0;
+
+    while (position < content.length) {
+      const end = Math.min(position + chunkSize, content.length);
+      const chunk = content.substring(position, end);
+      chunks.push({
+        content: chunk,
+        chunkIndex: chunkIndex,
+        chunkStart: position,
+        chunkEnd: end
+      });
+
+      position += chunkSize - overlapSize;
+      chunkIndex++;
+    }
+
+    return chunks;
   }
 
   shouldIndexFile(filePath) {
@@ -205,8 +334,22 @@ class FileWatchdog {
       return false;
     }
 
-    // Check if in a skipped directory
+    // Skip hidden files (files starting with .)
+    const basename = path.basename(filePath);
+    if (basename.startsWith('.')) {
+      return false;
+    }
+
+    // Skip files in hidden directories
     const normalizedPath = path.normalize(filePath);
+    const pathParts = normalizedPath.split(path.sep);
+    for (const part of pathParts) {
+      if (part.startsWith('.')) {
+        return false;
+      }
+    }
+
+    // Check if in a skipped directory
     for (const skipDir of this.skipDirs) {
       if (normalizedPath.includes(`/${skipDir}/`) || normalizedPath.includes(`\\${skipDir}\\`)) {
         return false;
@@ -216,38 +359,6 @@ class FileWatchdog {
     return true;
   }
 
-  async processPendingUpdates() {
-    if (this.isIndexing || this.pendingUpdates.size === 0) {
-      return;
-    }
-
-    this.isIndexing = true;
-    const updates = Array.from(this.pendingUpdates);
-    this.pendingUpdates.clear();
-
-    console.log(`🔄 Processing ${updates.length} file updates...`);
-
-    try {
-      for (const update of updates) {
-        const { eventType, filePath } = update;
-
-        if (eventType === 'removed') {
-          await this.removeFileFromIndex(filePath);
-        } else {
-          // For 'added' or 'changed' events, index/update the file
-          await this.indexSingleFile(filePath);
-        }
-      }
-
-      // Refresh the index to make changes visible
-      await this.client.indices.refresh({ index: this.indexName });
-      console.log('✅ File updates processed successfully');
-    } catch (error) {
-      console.error('❌ Failed to process file updates:', error.message);
-    } finally {
-      this.isIndexing = false;
-    }
-  }
 
   async indexSingleFile(filePath) {
     try {
@@ -261,23 +372,13 @@ class FileWatchdog {
         return;
       }
 
-      // Skip large files (> 50MB)
-      const maxSize = 50 * 1024 * 1024;
-      if (stats.size > maxSize) {
-        console.log(`⚠️  Skipping large file: ${filePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
-        return;
+      // Log file size for large files
+      if (stats.size > 10 * 1024 * 1024) {
+        console.log(`📄 Indexing large file: ${filePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
+      } else {
+        console.log(`📄 Indexing: ${filePath}`);
       }
-
-      console.log(`📄 Indexing: ${filePath}`);
-      let content = await this.documentProcessor.extractText(filePath);
-
-      // Limit content size to prevent Elasticsearch issues with huge documents
-      // Keep first 1MB of text content (approximately 1 million characters)
-      const maxContentLength = 1000000;
-      if (content && content.length > maxContentLength) {
-        console.log(`  ⚠️  Truncating content from ${content.length} to ${maxContentLength} characters`);
-        content = content.substring(0, maxContentLength);
-      }
+      const content = await this.documentProcessor.extractText(filePath);
 
       const filename = path.basename(filePath);
       const extension = path.extname(filePath);
@@ -287,23 +388,43 @@ class FileWatchdog {
       const hostPath = filePath.replace(this.CONTAINER_BASE, this.HOST_BASE);
       const relativePath = path.relative(this.baseDir, filePath);
 
-      // Delete existing document with same path (if any)
+      // Delete existing document and all chunks with same path (if any)
       await this.removeFileFromIndex(filePath);
 
-      // Index the new/updated document
-      await this.client.index({
-        index: this.indexName,
-        body: {
-          filename,
-          path: relativePath,
-          hostPath: hostPath,
-          content,
-          size: stats.size,
-          modified: stats.mtime,
-          extension,
-          fileType
-        }
-      });
+      // Chunk the content for large documents
+      const chunks = this.chunkContent(content);
+
+      if (chunks.length > 1) {
+        console.log(`  📦 Splitting into ${chunks.length} chunks (content size: ${content.length} chars)`);
+      }
+
+      // Index each chunk as a separate document
+      for (const chunk of chunks) {
+        const docId = chunks.length > 1
+          ? `${relativePath}::chunk${chunk.chunkIndex}`
+          : relativePath;
+
+        await this.client.index({
+          index: this.indexName,
+          id: docId,
+          body: {
+            filename,
+            path: relativePath,
+            hostPath: hostPath,
+            content: chunk.content,
+            size: stats.size,
+            modified: stats.mtime,
+            extension,
+            fileType,
+            // Chunk metadata
+            isChunked: chunks.length > 1,
+            chunkIndex: chunk.chunkIndex,
+            totalChunks: chunks.length,
+            chunkStart: chunk.chunkStart,
+            chunkEnd: chunk.chunkEnd
+          }
+        });
+      }
 
       console.log(`✅ Indexed: ${relativePath}`);
     } catch (error) {
@@ -315,9 +436,10 @@ class FileWatchdog {
     try {
       const relativePath = path.relative(this.baseDir, filePath);
 
-      // Search for the document by path
+      // Search for all documents (including chunks) by path
       const searchResult = await this.client.search({
         index: this.indexName,
+        size: 1000, // Ensure we get all chunks
         body: {
           query: {
             term: {
@@ -327,7 +449,7 @@ class FileWatchdog {
         }
       });
 
-      // Delete all matching documents
+      // Delete all matching documents (including all chunks)
       if (searchResult.hits.hits.length > 0) {
         for (const hit of searchResult.hits.hits) {
           await this.client.delete({
@@ -335,7 +457,7 @@ class FileWatchdog {
             id: hit._id
           });
         }
-        console.log(`🗑️  Removed from index: ${relativePath}`);
+        console.log(`🗑️  Removed from index: ${relativePath} (${searchResult.hits.hits.length} document(s))`);
       }
     } catch (error) {
       if (error.meta?.statusCode === 404) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { Client } = require('@elastic/elasticsearch');
+const SearchHistory = require('./searchHistory');
 
 const app = express();
 const port = 3001;
@@ -13,6 +14,9 @@ const HOST_BASE = process.env.HOST_HOME || process.env.HOME || '/home/user';
 const client = new Client({
   node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
 });
+
+// Initialize search history
+const searchHistory = new SearchHistory();
 
 app.use(cors());
 app.use(express.json());
@@ -64,26 +68,66 @@ app.get('/search', async (req, res) => {
     // Handle both old and new Elasticsearch client response formats
     const hits = searchResponse.body?.hits?.hits || searchResponse.hits?.hits || [];
 
-    const results = hits.map(hit => ({
-      id: hit._id,
-      score: hit._score,
-      filename: hit._source.filename,
-      path: hit._source.hostPath || hit._source.path, // Use hostPath for frontend display
-      content: hit._source.content,
-      highlights: hit.highlight?.content || [],
-      size: hit._source.size,
-      modified: hit._source.modified,
-      fileType: hit._source.fileType
-    }));
+    // Merge chunks from the same file
+    const fileMap = new Map();
+
+    for (const hit of hits) {
+      const source = hit._source;
+      const filePath = source.path;
+
+      if (!fileMap.has(filePath)) {
+        // First chunk or non-chunked document for this file
+        fileMap.set(filePath, {
+          id: hit._id,
+          score: hit._score,
+          filename: source.filename,
+          path: source.hostPath || source.path,
+          content: source.content || '', // Ensure content is always a string
+          highlights: hit.highlight?.content || [],
+          size: source.size,
+          modified: source.modified,
+          fileType: source.fileType,
+          isChunked: source.isChunked || false,
+          totalChunks: source.totalChunks || 1,
+          chunks: source.isChunked ? [{ index: source.chunkIndex, score: hit._score }] : []
+        });
+      } else {
+        // Additional chunk for existing file - merge with higher score
+        const existing = fileMap.get(filePath);
+        if (hit._score > existing.score) {
+          existing.score = hit._score;
+          existing.content = source.content || existing.content || ''; // Use chunk with best match, fallback to existing or empty
+          existing.highlights = hit.highlight?.content || existing.highlights;
+        }
+        if (source.isChunked) {
+          existing.chunks.push({ index: source.chunkIndex, score: hit._score });
+        }
+      }
+    }
+
+    // Convert map to array and sort by score
+    const results = Array.from(fileMap.values())
+      .sort((a, b) => b.score - a.score)
+      .map(result => {
+        // Remove internal chunks array from response
+        const { chunks, ...rest } = result;
+        return rest;
+      });
 
     // Handle both old and new Elasticsearch client response formats for total count
-    const total = searchResponse.body?.hits?.total?.value ||
-                  searchResponse.body?.hits?.total ||
-                  searchResponse.hits?.total?.value ||
-                  searchResponse.hits?.total || 0;
+    const totalHits = searchResponse.body?.hits?.total?.value ||
+                      searchResponse.body?.hits?.total ||
+                      searchResponse.hits?.total?.value ||
+                      searchResponse.hits?.total || 0;
+
+    // Save query to search history
+    if (q && results.length > 0) {
+      searchHistory.addQuery(q, results.length);
+    }
 
     res.json({
-      total,
+      total: results.length, // Total unique files (not chunks)
+      totalChunks: totalHits, // Total chunks matched
       results
     });
   } catch (error) {
@@ -256,6 +300,82 @@ app.get('/stats', async (req, res) => {
   }
 });
 
+// Search history endpoints
+app.get('/history', async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const history = searchHistory.getRecentQueries(parseInt(limit));
+    res.json({ history });
+  } catch (error) {
+    console.error('History error:', error);
+    res.status(500).json({ error: 'Failed to get history', message: error.message });
+  }
+});
+
+app.get('/history/search', async (req, res) => {
+  try {
+    const { q, limit = 20 } = req.query;
+
+    if (!q) {
+      return res.status(400).json({ error: 'Query parameter q is required' });
+    }
+
+    const history = searchHistory.searchQueries(q, parseInt(limit));
+    res.json({ history });
+  } catch (error) {
+    console.error('History search error:', error);
+    res.status(500).json({ error: 'Failed to search history', message: error.message });
+  }
+});
+
+app.delete('/history/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const success = searchHistory.deleteQuery(parseInt(id));
+
+    if (success) {
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: 'Query not found' });
+    }
+  } catch (error) {
+    console.error('History delete error:', error);
+    res.status(500).json({ error: 'Failed to delete query', message: error.message });
+  }
+});
+
+app.delete('/history', async (req, res) => {
+  try {
+    const success = searchHistory.clearHistory();
+
+    if (success) {
+      res.json({ success: true, message: 'History cleared' });
+    } else {
+      res.status(500).json({ error: 'Failed to clear history' });
+    }
+  } catch (error) {
+    console.error('History clear error:', error);
+    res.status(500).json({ error: 'Failed to clear history', message: error.message });
+  }
+});
+
+app.get('/history/stats', async (req, res) => {
+  try {
+    const stats = searchHistory.getStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('History stats error:', error);
+    res.status(500).json({ error: 'Failed to get history stats', message: error.message });
+  }
+});
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`Server running at http://0.0.0.0:${port}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, closing search history database...');
+  searchHistory.close();
+  process.exit(0);
 });

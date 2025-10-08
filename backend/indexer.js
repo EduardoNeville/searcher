@@ -78,7 +78,15 @@ async function createIndex() {
 
 function shouldSkipPath(filePath) {
   const parts = filePath.split(path.sep);
-  return parts.some(part => SKIP_DIRS.includes(part) || part.startsWith('.'));
+  // Skip if any part of the path starts with '.' (hidden directories or files)
+  // or if it's in the SKIP_DIRS list
+  return parts.some(part => part.startsWith('.') || SKIP_DIRS.includes(part));
+}
+
+function isHiddenFile(filePath) {
+  // Check if the file itself is hidden (starts with .)
+  const basename = path.basename(filePath);
+  return basename.startsWith('.');
 }
 
 function isAllowedFile(filePath) {
@@ -125,14 +133,12 @@ async function indexFile(filePath, relativePath) {
       return false;
     }
 
-    // Skip large files (> 50MB for documents, > 10MB for text files)
-    const maxSize = documentProcessor.getFileType(filePath) === 'text' ? 10 * 1024 * 1024 : 50 * 1024 * 1024;
-    if (stats.size > maxSize) {
-      console.log(`Skipping large file: ${relativePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
-      return false;
+    // Log file size for large files
+    if (stats.size > 10 * 1024 * 1024) {
+      console.log(`Processing large file: ${relativePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
+    } else {
+      console.log(`Processing: ${relativePath}`);
     }
-
-    console.log(`Processing: ${relativePath}`);
     const content = await documentProcessor.extractText(filePath);
 
     const filename = path.basename(filePath);
@@ -192,6 +198,12 @@ async function walkDirectory(dirPath, baseDir) {
     const items = fs.readdirSync(dirPath);
 
     for (const item of items) {
+      // Skip hidden files/directories immediately
+      if (item.startsWith('.')) {
+        skipped++;
+        continue;
+      }
+
       const itemPath = path.join(dirPath, item);
       const relativePath = path.relative(baseDir, itemPath);
 
