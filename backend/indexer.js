@@ -13,8 +13,9 @@ const INDEX_NAME = 'files';
 const documentProcessor = new DocumentProcessor();
 
 // Path translation between container and host
+// The container always uses /home/user, but the host path comes from HOST_HOME
 const CONTAINER_BASE = '/home/user';
-const HOST_BASE = '/home/eduardoneville';
+const HOST_BASE = process.env.HOST_HOME || process.env.HOME || '/home/user';
 
 function containerToHostPath(containerPath) {
   return containerPath.replace(CONTAINER_BASE, HOST_BASE);
@@ -81,7 +82,39 @@ function shouldSkipPath(filePath) {
 }
 
 function isAllowedFile(filePath) {
-  return documentProcessor.isSupported(filePath);
+  // Only allow PDF, DOCX, and PPTX files
+  const ext = path.extname(filePath).toLowerCase();
+  const allowedExtensions = ['.pdf', '.docx', '.pptx'];
+  return allowedExtensions.includes(ext);
+}
+
+function chunkContent(content, chunkSize = 500000) {
+  // Split content into chunks with overlap for better search continuity
+  const chunks = [];
+  const overlapSize = 5000; // 5KB overlap between chunks
+
+  if (!content || content.length <= chunkSize) {
+    return [content || ''];
+  }
+
+  let position = 0;
+  let chunkIndex = 0;
+
+  while (position < content.length) {
+    const end = Math.min(position + chunkSize, content.length);
+    const chunk = content.substring(position, end);
+    chunks.push({
+      content: chunk,
+      chunkIndex: chunkIndex,
+      chunkStart: position,
+      chunkEnd: end
+    });
+
+    position += chunkSize - overlapSize;
+    chunkIndex++;
+  }
+
+  return chunks;
 }
 
 async function indexFile(filePath, relativePath) {
@@ -101,6 +134,7 @@ async function indexFile(filePath, relativePath) {
 
     console.log(`Processing: ${relativePath}`);
     const content = await documentProcessor.extractText(filePath);
+
     const filename = path.basename(filePath);
     const extension = path.extname(filePath);
     const fileType = documentProcessor.getFileType(filePath);
@@ -108,19 +142,40 @@ async function indexFile(filePath, relativePath) {
     const hostPath = containerToHostPath(filePath);
     const hostRelativePath = containerToHostPath(relativePath);
 
-    await client.index({
-      index: INDEX_NAME,
-      body: {
-        filename,
-        path: relativePath,
-        hostPath: hostPath, // Full absolute path on host machine
-        content,
-        size: stats.size,
-        modified: stats.mtime,
-        extension,
-        fileType
-      }
-    });
+    // Chunk the content for large documents
+    const chunks = chunkContent(content);
+
+    if (chunks.length > 1) {
+      console.log(`  📦 Splitting into ${chunks.length} chunks (content size: ${content.length} chars)`);
+    }
+
+    // Index each chunk as a separate document
+    for (const chunk of chunks) {
+      const docId = chunks.length > 1
+        ? `${relativePath}::chunk${chunk.chunkIndex}`
+        : relativePath;
+
+      await client.index({
+        index: INDEX_NAME,
+        id: docId,
+        body: {
+          filename,
+          path: relativePath,
+          hostPath: hostPath, // Full absolute path on host machine
+          content: chunk.content,
+          size: stats.size,
+          modified: stats.mtime,
+          extension,
+          fileType,
+          // Chunk metadata
+          isChunked: chunks.length > 1,
+          chunkIndex: chunk.chunkIndex,
+          totalChunks: chunks.length,
+          chunkStart: chunk.chunkStart,
+          chunkEnd: chunk.chunkEnd
+        }
+      });
+    }
 
     return true;
   } catch (error) {
@@ -178,8 +233,10 @@ async function main() {
     console.log('Starting file indexing...');
     const startTime = Date.now();
 
-    // Index files from the mounted home directory
-    const baseDir = '/home/user/Desktop/MarketAnalysis/BerkshireHathawayLetters';
+    // Index files from the mounted directory
+    // Always use /home/user in the container (this is where MOUNT_DIR is mounted)
+    const baseDir = '/home/user';
+    console.log(`Indexing directory: ${baseDir} (maps to ${HOST_BASE} on host)`);
     const result = await walkDirectory(baseDir, baseDir);
 
     const endTime = Date.now();

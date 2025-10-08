@@ -5,16 +5,26 @@ const path = require('path');
 const { spawn } = require('child_process');
 const chokidar = require('chokidar');
 const { Client } = require('@elastic/elasticsearch');
+const DocumentProcessor = require('./documentProcessor');
 
 class FileWatchdog {
   constructor() {
     this.client = new Client({
       node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
     });
-    this.watchedDirectories = ['/home/eduardoneville'];
+    this.documentProcessor = new DocumentProcessor();
+    // Container always uses /home/user as the mount point
+    const mountDir = '/home/user';
+    this.watchedDirectories = [mountDir];
+    this.baseDir = mountDir;
     this.isIndexing = false;
     this.pendingUpdates = new Set();
     this.updateTimeout = null;
+    this.indexName = 'files';
+
+    // Path mapping constants
+    this.CONTAINER_BASE = '/home/user';
+    this.HOST_BASE = process.env.HOST_HOME || process.env.HOME || '/home/user';
 
     // Directories to skip
     this.skipDirs = [
@@ -187,16 +197,9 @@ class FileWatchdog {
   }
 
   shouldIndexFile(filePath) {
-    // Check file extension
+    // Only index PDF, DOCX, and PPTX files
     const ext = path.extname(filePath).toLowerCase();
-    const indexableExtensions = [
-      '.txt', '.md', '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.cpp', '.c', '.h',
-      '.css', '.scss', '.sass', '.html', '.htm', '.xml', '.json', '.yml', '.yaml',
-      '.go', '.rs', '.php', '.rb', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat',
-      '.sql', '.r', '.m', '.swift', '.kt', '.scala', '.clj', '.hs', '.elm',
-      '.pdf', '.doc', '.docx', '.rtf', '.odt', '.tex',
-      '.ppt', '.pptx', '.ppsx', '.potx', '.xls', '.xlsx'
-    ];
+    const indexableExtensions = ['.pdf', '.docx', '.pptx'];
 
     if (!indexableExtensions.includes(ext)) {
       return false;
@@ -225,14 +228,121 @@ class FileWatchdog {
     console.log(`🔄 Processing ${updates.length} file updates...`);
 
     try {
-      // For now, we'll do a simple approach: re-run the indexer for any changes
-      // In a production system, you'd want to handle individual file updates
-      await this.runIndexer();
+      for (const update of updates) {
+        const { eventType, filePath } = update;
+
+        if (eventType === 'removed') {
+          await this.removeFileFromIndex(filePath);
+        } else {
+          // For 'added' or 'changed' events, index/update the file
+          await this.indexSingleFile(filePath);
+        }
+      }
+
+      // Refresh the index to make changes visible
+      await this.client.indices.refresh({ index: this.indexName });
       console.log('✅ File updates processed successfully');
     } catch (error) {
       console.error('❌ Failed to process file updates:', error.message);
     } finally {
       this.isIndexing = false;
+    }
+  }
+
+  async indexSingleFile(filePath) {
+    try {
+      if (!fs.existsSync(filePath)) {
+        console.log(`⚠️  File not found, skipping: ${filePath}`);
+        return;
+      }
+
+      const stats = fs.statSync(filePath);
+      if (!stats.isFile()) {
+        return;
+      }
+
+      // Skip large files (> 50MB)
+      const maxSize = 50 * 1024 * 1024;
+      if (stats.size > maxSize) {
+        console.log(`⚠️  Skipping large file: ${filePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
+        return;
+      }
+
+      console.log(`📄 Indexing: ${filePath}`);
+      let content = await this.documentProcessor.extractText(filePath);
+
+      // Limit content size to prevent Elasticsearch issues with huge documents
+      // Keep first 1MB of text content (approximately 1 million characters)
+      const maxContentLength = 1000000;
+      if (content && content.length > maxContentLength) {
+        console.log(`  ⚠️  Truncating content from ${content.length} to ${maxContentLength} characters`);
+        content = content.substring(0, maxContentLength);
+      }
+
+      const filename = path.basename(filePath);
+      const extension = path.extname(filePath);
+      const fileType = this.documentProcessor.getFileType(filePath);
+
+      // Convert container path to host path
+      const hostPath = filePath.replace(this.CONTAINER_BASE, this.HOST_BASE);
+      const relativePath = path.relative(this.baseDir, filePath);
+
+      // Delete existing document with same path (if any)
+      await this.removeFileFromIndex(filePath);
+
+      // Index the new/updated document
+      await this.client.index({
+        index: this.indexName,
+        body: {
+          filename,
+          path: relativePath,
+          hostPath: hostPath,
+          content,
+          size: stats.size,
+          modified: stats.mtime,
+          extension,
+          fileType
+        }
+      });
+
+      console.log(`✅ Indexed: ${relativePath}`);
+    } catch (error) {
+      console.error(`❌ Error indexing ${filePath}:`, error.message);
+    }
+  }
+
+  async removeFileFromIndex(filePath) {
+    try {
+      const relativePath = path.relative(this.baseDir, filePath);
+
+      // Search for the document by path
+      const searchResult = await this.client.search({
+        index: this.indexName,
+        body: {
+          query: {
+            term: {
+              'path.keyword': relativePath
+            }
+          }
+        }
+      });
+
+      // Delete all matching documents
+      if (searchResult.hits.hits.length > 0) {
+        for (const hit of searchResult.hits.hits) {
+          await this.client.delete({
+            index: this.indexName,
+            id: hit._id
+          });
+        }
+        console.log(`🗑️  Removed from index: ${relativePath}`);
+      }
+    } catch (error) {
+      if (error.meta?.statusCode === 404) {
+        // Index or document doesn't exist, that's fine
+        return;
+      }
+      console.error(`❌ Error removing ${filePath} from index:`, error.message);
     }
   }
 

@@ -38,6 +38,7 @@ class SearcherLauncher {
     console.log('🚀 Searcher Application Launcher');
     console.log(`📱 Platform: ${this.platform}`);
     console.log(`📁 Project Root: ${this.projectRoot}`);
+    console.log(`📂 Mount Directory: ${this.options.mountDir}`);
     console.log('');
   }
 
@@ -48,10 +49,12 @@ class SearcherLauncher {
       build: false,
       watchdog: true,
       opener: true,
-      help: false
+      help: false,
+      mountDir: os.homedir()  // Default to user's home directory
     };
 
-    for (const arg of args) {
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
       switch (arg) {
         case '--dev':
           options.dev = true;
@@ -64,6 +67,14 @@ class SearcherLauncher {
           break;
         case '--no-opener':
           options.opener = false;
+          break;
+        case '--mount-dir':
+          if (i + 1 < args.length) {
+            options.mountDir = path.resolve(args[i + 1]);
+            i++; // Skip next argument
+          } else {
+            throw new Error('--mount-dir requires a directory path');
+          }
           break;
         case '--help':
           options.help = true;
@@ -81,17 +92,20 @@ Cross-Platform Searcher Application Launcher
 Usage: node start-all.js [options]
 
 Options:
-  --dev          Start in development mode (rebuilds containers)
-  --build        Force rebuild containers
-  --no-watchdog  Skip starting the file system watchdog
-  --no-opener    Skip starting the host file opener
-  --help         Show this help message
+  --dev                Start in development mode (rebuilds containers)
+  --build              Force rebuild containers
+  --mount-dir <path>   Directory to mount and index (default: home directory)
+  --no-watchdog        Skip starting the file system watchdog
+  --no-opener          Skip starting the host file opener
+  --help               Show this help message
 
 Examples:
-  node start-all.js                    # Start everything
-  node start-all.js --dev              # Development mode
-  node start-all.js --no-watchdog      # Skip watchdog
-  node start-all.js --build            # Force rebuild
+  node start-all.js                                    # Start everything
+  node start-all.js --dev                              # Development mode
+  node start-all.js --mount-dir ~/Documents            # Index Documents folder
+  node start-all.js --mount-dir /path/to/project       # Index specific directory
+  node start-all.js --no-watchdog                      # Skip watchdog
+  node start-all.js --build                            # Force rebuild
 
 The script will:
 1. Check for required dependencies (Docker, Node.js)
@@ -112,6 +126,15 @@ Press Ctrl+C to gracefully shutdown all services.
 
     try {
       console.log('🔍 Pre-flight checks...');
+
+      // Validate mount directory
+      if (!fs.existsSync(this.options.mountDir)) {
+        throw new Error(`Mount directory does not exist: ${this.options.mountDir}`);
+      }
+      if (!fs.statSync(this.options.mountDir).isDirectory()) {
+        throw new Error(`Mount path is not a directory: ${this.options.mountDir}`);
+      }
+
       await this.checkDependencies();
 
       console.log('📦 Setting up containers...');
@@ -206,17 +229,25 @@ Press Ctrl+C to gracefully shutdown all services.
       throw new Error('docker-compose.yml not found in project root');
     }
 
+    // Set environment variables for Docker Compose
+    const env = {
+      ...process.env,
+      MOUNT_DIR: this.options.mountDir,
+      FILE_COMMANDS_DIR: path.join(os.homedir(), '.file_open_commands')
+    };
+
     // Build containers if requested or in dev mode
     if (this.options.build || this.options.dev) {
       console.log('  🔨 Building containers...');
-      await this.execAsync('docker-compose build', { cwd: this.projectRoot });
+      await this.execAsync('docker-compose build', { cwd: this.projectRoot, env });
     }
 
     // Start containers
     console.log('  🚀 Starting containers...');
     const dockerProcess = spawn('docker-compose', ['up'], {
       cwd: this.projectRoot,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env
     });
 
     this.processes.set('docker', dockerProcess);

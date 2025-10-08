@@ -5,6 +5,10 @@ const { Client } = require('@elastic/elasticsearch');
 const app = express();
 const port = 3001;
 
+// Path mapping constants
+const CONTAINER_BASE = '/home/user';
+const HOST_BASE = process.env.HOST_HOME || process.env.HOME || '/home/user';
+
 // Initialize Elasticsearch client
 const client = new Client({
   node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
@@ -47,7 +51,9 @@ app.get('/search', async (req, res) => {
           fields: {
             content: {
               fragment_size: 150,
-              number_of_fragments: 3
+              number_of_fragments: 3,
+              // Limit highlighting to avoid errors with very large documents
+              max_analyzed_offset: 500000
             }
           }
         },
@@ -98,15 +104,15 @@ app.get('/file/*', async (req, res) => {
 
     // Handle path mapping between search index paths and container mount points
     let absolutePath;
-    if (filePath.startsWith('/home/eduardoneville/')) {
-      // Map /home/eduardoneville/ to /home/user/ (the mounted volume)
-      absolutePath = filePath.replace('/home/eduardoneville/', '/home/user/');
-    } else if (filePath.startsWith('/home/user/')) {
+    if (filePath.startsWith(HOST_BASE + '/')) {
+      // Map host path to container path
+      absolutePath = filePath.replace(HOST_BASE + '/', CONTAINER_BASE + '/');
+    } else if (filePath.startsWith(CONTAINER_BASE + '/')) {
       // Already correctly mapped
       absolutePath = filePath;
     } else {
       // Relative path, join with mounted volume root
-      absolutePath = pathModule.join('/home/user', filePath);
+      absolutePath = pathModule.join(CONTAINER_BASE, filePath);
     }
 
     // Check if file exists
@@ -166,9 +172,9 @@ app.post('/open-file', async (req, res) => {
 
     // Map container path to host path for file opening
     let hostPath = path;
-    if (path.startsWith('/home/user/')) {
-      // Map /home/user/ back to /home/eduardoneville/ for the host system
-      hostPath = path.replace('/home/user/', '/home/eduardoneville/');
+    if (path.startsWith(CONTAINER_BASE + '/')) {
+      // Map container path back to host path for the host system
+      hostPath = path.replace(CONTAINER_BASE + '/', HOST_BASE + '/');
     }
 
     // Create a command file for the file opener watcher
