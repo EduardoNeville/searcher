@@ -113,52 +113,77 @@ class DocumentProcessor {
 
   async extractText(filePath) {
     const ext = path.extname(filePath).toLowerCase();
-    const buffer = fs.readFileSync(filePath);
-
-    // Check for placeholder files or files that are still syncing
-    const placeholderCheck = this.checkIfPlaceholder(filePath, buffer, ext);
-    if (placeholderCheck.isPlaceholder) {
-      throw new Error(`PLACEHOLDER_FILE: ${placeholderCheck.reason}`);
-    }
 
     try {
-      switch (ext) {
-        case '.pdf':
-          return await this.extractPdfText(buffer);
+      const buffer = fs.readFileSync(filePath);
 
-        case '.docx':
-          return await this.extractDocxText(buffer);
-
-        case '.doc':
-          // For .doc files, we'll try to read as text (limited support)
-          return await this.extractDocText(buffer);
-
-        case '.pptx':
-        case '.ppsx':
-        case '.potx':
-          return await this.extractPptxText(buffer);
-
-        case '.ppt':
-          // For .ppt files, we'll try basic text extraction (limited support)
-          return await this.extractPptText(buffer);
-
-        case '.xlsx':
-        case '.xls':
-          return await this.extractExcelText(filePath, buffer);
-
-        case '.odt':
-          return await this.extractOdtText(buffer);
-
-        case '.rtf':
-          return await this.extractRtfText(buffer);
-
-        default:
-          // Handle text files
-          return buffer.toString('utf8');
+      // Check for placeholder files or files that are still syncing
+      const placeholderCheck = this.checkIfPlaceholder(filePath, buffer, ext);
+      if (placeholderCheck.isPlaceholder) {
+        throw new Error(`PLACEHOLDER_FILE: ${placeholderCheck.reason}`);
       }
-    } catch (error) {
-      console.error(`Error extracting text from ${filePath}:`, error.message);
-      // Return partial content or empty string rather than failing completely
+
+      try {
+        switch (ext) {
+          case '.pdf':
+            return await this.extractPdfText(buffer);
+
+          case '.docx':
+            return await this.extractDocxText(buffer);
+
+          case '.doc':
+            // For .doc files, we'll try to read as text (limited support)
+            return await this.extractDocText(buffer);
+
+          case '.pptx':
+          case '.ppsx':
+          case '.potx':
+            return await this.extractPptxText(buffer);
+
+          case '.ppt':
+            // For .ppt files, we'll try basic text extraction (limited support)
+            return await this.extractPptText(buffer);
+
+          case '.xlsx':
+          case '.xls':
+            return await this.extractExcelText(filePath, buffer);
+
+          case '.odt':
+            return await this.extractOdtText(buffer);
+
+          case '.rtf':
+            return await this.extractRtfText(buffer);
+
+          default:
+            // Handle text files - with UTF-8 error handling
+            try {
+              return buffer.toString('utf8');
+            } catch (utfError) {
+              console.warn(`  ⚠️  UTF-8 decoding error, trying latin1 encoding`);
+              return buffer.toString('latin1');
+            }
+        }
+      } catch (error) {
+        // Check if it's a UTF-8 related error
+        if (error.message && (error.message.includes('UTF-8') ||
+                              error.message.includes('Invalid string length') ||
+                              error.message.includes('Cannot create a string longer'))) {
+          console.warn(`  ⚠️  Text encoding error in ${filePath}: ${error.message}`);
+          return '';
+        }
+
+        console.warn(`  ⚠️  Error extracting text from ${filePath}: ${error.message}`);
+        // Return empty string rather than failing completely
+        return '';
+      }
+    } catch (outerError) {
+      // Catch any error including file read errors
+      if (outerError.message && outerError.message.startsWith('PLACEHOLDER_FILE:')) {
+        // Re-throw placeholder errors so indexer can handle them
+        throw outerError;
+      }
+
+      console.warn(`  ⚠️  Failed to process ${filePath}: ${outerError.message}`);
       return '';
     }
   }
@@ -272,31 +297,46 @@ class DocumentProcessor {
   }
 
   async extractDocxText(buffer) {
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value;
+    try {
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value || '';
+    } catch (error) {
+      console.warn(`  ⚠️  DOCX extraction error: ${error.message}`);
+      return '';
+    }
   }
 
   async extractDocText(buffer) {
-    // Limited support for .doc files - try to extract readable text
-    const text = buffer.toString('utf8');
-    // Remove control characters and extract readable text
-    return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
-               .replace(/\s+/g, ' ')
-               .trim();
+    try {
+      // Limited support for .doc files - try to extract readable text
+      const text = buffer.toString('utf8');
+      // Remove control characters and extract readable text
+      return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
+                 .replace(/\s+/g, ' ')
+                 .trim();
+    } catch (error) {
+      console.warn(`  ⚠️  DOC extraction error: ${error.message}`);
+      return '';
+    }
   }
 
   async extractPptxText(buffer) {
-    // Try using node-pptx first for better extraction
-    if (PPTX) {
-      try {
-        return await this.extractPptxWithNodePptx(buffer);
-      } catch (error) {
-        console.warn('node-pptx extraction failed, falling back to manual method:', error.message);
+    try {
+      // Try using node-pptx first for better extraction
+      if (PPTX) {
+        try {
+          return await this.extractPptxWithNodePptx(buffer);
+        } catch (error) {
+          console.warn(`  ⚠️  node-pptx extraction failed, falling back to manual method: ${error.message}`);
+        }
       }
-    }
 
-    // Fall back to manual extraction
-    return await this.extractPptxManual(buffer);
+      // Fall back to manual extraction
+      return await this.extractPptxManual(buffer);
+    } catch (error) {
+      console.warn(`  ⚠️  PPTX extraction error: ${error.message}`);
+      return '';
+    }
   }
 
   async extractPptxWithNodePptx(buffer) {
@@ -333,11 +373,12 @@ class DocumentProcessor {
 
   async extractPptxManual(buffer) {
     return new Promise((resolve, reject) => {
-      yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
-        if (err) {
-          reject(err);
-          return;
-        }
+      try {
+        yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
+          if (err) {
+            reject(err);
+            return;
+          }
 
         let slideTexts = [];
         let entriesProcessed = 0;
@@ -375,6 +416,13 @@ class DocumentProcessor {
                   }
                 });
               });
+
+              readStream.on('error', () => {
+                entriesProcessed++;
+                if (entriesProcessed === totalEntries) {
+                  resolve(slideTexts.join('\n\n'));
+                }
+              });
             });
           } else {
             entriesProcessed++;
@@ -390,17 +438,29 @@ class DocumentProcessor {
           }
         });
 
+        zipfile.on('error', (err) => {
+          reject(err);
+        });
+
         zipfile.readEntry();
       });
+      } catch (error) {
+        reject(error);
+      }
     });
   }
 
   async extractPptText(buffer) {
-    // Limited support for .ppt files
-    const text = buffer.toString('utf8');
-    return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
-               .replace(/\s+/g, ' ')
-               .trim();
+    try {
+      // Limited support for .ppt files
+      const text = buffer.toString('utf8');
+      return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
+                 .replace(/\s+/g, ' ')
+                 .trim();
+    } catch (error) {
+      console.warn(`  ⚠️  PPT extraction error: ${error.message}`);
+      return '';
+    }
   }
 
   async extractExcelText(filePath, buffer) {
@@ -416,163 +476,200 @@ class DocumentProcessor {
                    .trim();
       }
     } catch (error) {
+      console.warn(`  ⚠️  Excel extraction error: ${error.message}`);
       return '';
     }
   }
 
   async extractXlsxText(buffer) {
     return new Promise((resolve, reject) => {
-      yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
-        if (err) {
-          resolve('');
-          return;
-        }
+      try {
+        yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
+          if (err) {
+            resolve('');
+            return;
+          }
 
-        let worksheetTexts = [];
-        let entriesProcessed = 0;
-        let totalEntries = 0;
+          let worksheetTexts = [];
+          let entriesProcessed = 0;
+          let totalEntries = 0;
 
-        zipfile.on('entry', (entry) => {
-          totalEntries++;
+          zipfile.on('entry', (entry) => {
+            totalEntries++;
 
-          if (entry.fileName.startsWith('xl/worksheets/') && entry.fileName.endsWith('.xml')) {
-            zipfile.openReadStream(entry, (err, readStream) => {
-              if (err) {
-                entriesProcessed++;
-                if (entriesProcessed === totalEntries) {
-                  resolve(worksheetTexts.join('\n'));
-                }
-                return;
-              }
-
-              let xmlData = '';
-              readStream.on('data', (chunk) => {
-                xmlData += chunk;
-              });
-
-              readStream.on('end', () => {
-                xml2js.parseString(xmlData, (err, result) => {
-                  if (!err && result) {
-                    const text = this.extractTextFromXml(result);
-                    if (text) {
-                      worksheetTexts.push(text);
-                    }
+            if (entry.fileName.startsWith('xl/worksheets/') && entry.fileName.endsWith('.xml')) {
+              zipfile.openReadStream(entry, (err, readStream) => {
+                if (err) {
+                  entriesProcessed++;
+                  if (entriesProcessed === totalEntries) {
+                    resolve(worksheetTexts.join('\n'));
                   }
+                  return;
+                }
+
+                let xmlData = '';
+                readStream.on('data', (chunk) => {
+                  xmlData += chunk;
+                });
+
+                readStream.on('end', () => {
+                  xml2js.parseString(xmlData, (err, result) => {
+                    if (!err && result) {
+                      const text = this.extractTextFromXml(result);
+                      if (text) {
+                        worksheetTexts.push(text);
+                      }
+                    }
+                    entriesProcessed++;
+                    if (entriesProcessed === totalEntries) {
+                      resolve(worksheetTexts.join('\n'));
+                    }
+                  });
+                });
+
+                readStream.on('error', () => {
                   entriesProcessed++;
                   if (entriesProcessed === totalEntries) {
                     resolve(worksheetTexts.join('\n'));
                   }
                 });
               });
-            });
-          } else {
-            entriesProcessed++;
-            if (entriesProcessed === totalEntries) {
-              resolve(worksheetTexts.join('\n'));
+            } else {
+              entriesProcessed++;
+              if (entriesProcessed === totalEntries) {
+                resolve(worksheetTexts.join('\n'));
+              }
             }
-          }
-        });
+          });
 
-        zipfile.on('end', () => {
-          if (totalEntries === 0) {
+          zipfile.on('end', () => {
+            if (totalEntries === 0) {
+              resolve('');
+            }
+          });
+
+          zipfile.on('error', () => {
             resolve('');
-          }
-        });
+          });
 
-        zipfile.readEntry();
-      });
+          zipfile.readEntry();
+        });
+      } catch (error) {
+        resolve('');
+      }
     });
   }
 
   async extractOdtText(buffer) {
     // Extract text from OpenDocument Text files
     return new Promise((resolve, reject) => {
-      yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
-        if (err) {
-          resolve('');
-          return;
-        }
+      try {
+        yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
+          if (err) {
+            resolve('');
+            return;
+          }
 
-        zipfile.on('entry', (entry) => {
-          if (entry.fileName === 'content.xml') {
-            zipfile.openReadStream(entry, (err, readStream) => {
-              if (err) {
-                resolve('');
-                return;
-              }
+          zipfile.on('entry', (entry) => {
+            if (entry.fileName === 'content.xml') {
+              zipfile.openReadStream(entry, (err, readStream) => {
+                if (err) {
+                  resolve('');
+                  return;
+                }
 
-              let xmlData = '';
-              readStream.on('data', (chunk) => {
-                xmlData += chunk;
-              });
+                let xmlData = '';
+                readStream.on('data', (chunk) => {
+                  xmlData += chunk;
+                });
 
-              readStream.on('end', () => {
-                xml2js.parseString(xmlData, (err, result) => {
-                  if (err) {
-                    resolve('');
-                  } else {
-                    const text = this.extractTextFromXml(result);
-                    resolve(text);
-                  }
+                readStream.on('end', () => {
+                  xml2js.parseString(xmlData, (err, result) => {
+                    if (err) {
+                      resolve('');
+                    } else {
+                      const text = this.extractTextFromXml(result);
+                      resolve(text || '');
+                    }
+                  });
+                });
+
+                readStream.on('error', () => {
+                  resolve('');
                 });
               });
-            });
-          } else {
-            zipfile.readEntry();
-          }
-        });
+            } else {
+              zipfile.readEntry();
+            }
+          });
 
-        zipfile.on('end', () => {
-          resolve('');
-        });
+          zipfile.on('end', () => {
+            resolve('');
+          });
 
-        zipfile.readEntry();
-      });
+          zipfile.on('error', () => {
+            resolve('');
+          });
+
+          zipfile.readEntry();
+        });
+      } catch (error) {
+        resolve('');
+      }
     });
   }
 
   async extractRtfText(buffer) {
-    // Basic RTF text extraction (removes RTF commands)
-    const rtfContent = buffer.toString('utf8');
+    try {
+      // Basic RTF text extraction (removes RTF commands)
+      const rtfContent = buffer.toString('utf8');
 
-    // Remove RTF control words and commands
-    let text = rtfContent
-      .replace(/\\[a-z0-9-]+\s?/gi, ' ')  // Remove control words
-      .replace(/[{}]/g, ' ')              // Remove braces
-      .replace(/\\\\/g, '\\')             // Handle escaped backslashes
-      .replace(/\\'/g, "'")               // Handle escaped quotes
-      .replace(/\s+/g, ' ')               // Normalize whitespace
-      .trim();
+      // Remove RTF control words and commands
+      let text = rtfContent
+        .replace(/\\[a-z0-9-]+\s?/gi, ' ')  // Remove control words
+        .replace(/[{}]/g, ' ')              // Remove braces
+        .replace(/\\\\/g, '\\')             // Handle escaped backslashes
+        .replace(/\\'/g, "'")               // Handle escaped quotes
+        .replace(/\s+/g, ' ')               // Normalize whitespace
+        .trim();
 
-    return text;
+      return text;
+    } catch (error) {
+      console.warn(`  ⚠️  RTF extraction error: ${error.message}`);
+      return '';
+    }
   }
 
   extractTextFromXml(obj) {
-    let text = '';
+    try {
+      let text = '';
 
-    if (typeof obj === 'string') {
-      return obj;
-    }
-
-    if (Array.isArray(obj)) {
-      for (const item of obj) {
-        text += this.extractTextFromXml(item) + ' ';
+      if (typeof obj === 'string') {
+        return obj;
       }
-      return text;
-    }
 
-    if (typeof obj === 'object' && obj !== null) {
-      for (const key in obj) {
-        if (obj.hasOwnProperty(key)) {
-          if (key === '_' || key === '$') {
-            continue; // Skip XML attributes
+      if (Array.isArray(obj)) {
+        for (const item of obj) {
+          text += this.extractTextFromXml(item) + ' ';
+        }
+        return text;
+      }
+
+      if (typeof obj === 'object' && obj !== null) {
+        for (const key in obj) {
+          if (obj.hasOwnProperty(key)) {
+            if (key === '_' || key === '$') {
+              continue; // Skip XML attributes
+            }
+            text += this.extractTextFromXml(obj[key]) + ' ';
           }
-          text += this.extractTextFromXml(obj[key]) + ' ';
         }
       }
-    }
 
-    return text;
+      return text;
+    } catch (error) {
+      return '';
+    }
   }
 
   getFileType(filePath) {
