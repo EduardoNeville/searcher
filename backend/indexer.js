@@ -64,7 +64,10 @@ async function createIndex() {
             size: { type: 'long' },
             modified: { type: 'date' },
             extension: { type: 'keyword' },
-            fileType: { type: 'keyword' }
+            fileType: { type: 'keyword' },
+            syncStatus: { type: 'keyword' },
+            syncError: { type: 'text' },
+            lastSyncAttempt: { type: 'date' }
           }
         }
       }
@@ -93,7 +96,48 @@ function isAllowedFile(filePath) {
   // Only allow PDF, DOCX, and PPTX files
   const ext = path.extname(filePath).toLowerCase();
   const allowedExtensions = ['.pdf', '.docx', '.pptx'];
-  return allowedExtensions.includes(ext);
+
+  if (!allowedExtensions.includes(ext)) {
+    return false;
+  }
+
+  // Skip Microsoft Office temporary/lock files (start with ~$)
+  const basename = path.basename(filePath);
+  if (basename.startsWith('~$')) {
+    return false;
+  }
+
+  return true;
+}
+
+async function trackPlaceholderFile(filePath, relativePath, reason) {
+  try {
+    const stats = fs.statSync(filePath);
+    const filename = path.basename(filePath);
+    const extension = path.extname(filePath);
+    const fileType = documentProcessor.getFileType(filePath);
+    const hostPath = containerToHostPath(filePath);
+
+    await client.index({
+      index: INDEX_NAME,
+      id: relativePath,
+      body: {
+        filename,
+        path: relativePath,
+        hostPath: hostPath,
+        content: '',
+        size: stats.size,
+        modified: stats.mtime,
+        extension,
+        fileType,
+        syncStatus: 'pending_sync',
+        syncError: reason,
+        lastSyncAttempt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error(`Error tracking placeholder ${filePath}:`, error.message);
+  }
 }
 
 function chunkContent(content, chunkSize = 500000) {
@@ -125,12 +169,12 @@ function chunkContent(content, chunkSize = 500000) {
   return chunks;
 }
 
-async function indexFile(filePath, relativePath) {
+async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRetries: 3 }) {
   try {
     const stats = fs.statSync(filePath);
 
     if (!stats.isFile() || !isAllowedFile(filePath)) {
-      return false;
+      return { success: false, reason: 'not_allowed' };
     }
 
     // Log file size for large files
@@ -173,6 +217,9 @@ async function indexFile(filePath, relativePath) {
           modified: stats.mtime,
           extension,
           fileType,
+          syncStatus: 'synced',
+          syncError: null,
+          lastSyncAttempt: new Date(),
           // Chunk metadata
           isChunked: chunks.length > 1,
           chunkIndex: chunk.chunkIndex,
@@ -183,14 +230,32 @@ async function indexFile(filePath, relativePath) {
       });
     }
 
-    return true;
+    return { success: true };
   } catch (error) {
+    // Check if this is a placeholder file
+    if (error.message && error.message.startsWith('PLACEHOLDER_FILE:')) {
+      const reason = error.message.replace('PLACEHOLDER_FILE: ', '');
+      console.warn(`  ⏸️  Placeholder detected: ${relativePath} - ${reason}`);
+
+      // Track the placeholder file in the index
+      await trackPlaceholderFile(filePath, relativePath, reason);
+
+      return {
+        success: false,
+        reason: 'placeholder',
+        placeholder: true,
+        details: reason,
+        filePath,
+        relativePath
+      };
+    }
+
     console.error(`Error indexing ${filePath}:`, error.message);
-    return false;
+    return { success: false, reason: 'error', error: error.message };
   }
 }
 
-async function walkDirectory(dirPath, baseDir) {
+async function walkDirectory(dirPath, baseDir, placeholderFiles = []) {
   let indexed = 0;
   let skipped = 0;
 
@@ -212,19 +277,34 @@ async function walkDirectory(dirPath, baseDir) {
         continue;
       }
 
-      const stats = fs.statSync(itemPath);
+      // Check if path exists (handles broken symlinks)
+      let stats;
+      try {
+        stats = fs.statSync(itemPath);
+      } catch (statError) {
+        if (statError.code === 'ENOENT') {
+          console.warn(`  ⚠️  Skipping broken symlink or inaccessible path: ${relativePath}`);
+          skipped++;
+          continue;
+        }
+        throw statError;
+      }
 
       if (stats.isDirectory()) {
-        const result = await walkDirectory(itemPath, baseDir);
+        const result = await walkDirectory(itemPath, baseDir, placeholderFiles);
         indexed += result.indexed;
         skipped += result.skipped;
       } else {
-        const success = await indexFile(itemPath, relativePath);
-        if (success) {
+        const result = await indexFile(itemPath, relativePath);
+        if (result.success) {
           indexed++;
           if (indexed % 50 === 0) {
             console.log(`Indexed ${indexed} files...`);
           }
+        } else if (result.placeholder) {
+          // Track placeholder files for retry
+          placeholderFiles.push(result);
+          skipped++;
         } else {
           skipped++;
         }
@@ -234,7 +314,53 @@ async function walkDirectory(dirPath, baseDir) {
     console.error(`Error reading directory ${dirPath}:`, error.message);
   }
 
-  return { indexed, skipped };
+  return { indexed, skipped, placeholderFiles };
+}
+
+async function retryPlaceholders(placeholderFiles, maxRetries = 2, delaySeconds = 30) {
+  if (placeholderFiles.length === 0) return { indexed: 0, failed: 0 };
+
+  console.log(`\n🔄 Found ${placeholderFiles.length} placeholder/syncing files`);
+  console.log(`Will retry after ${delaySeconds} seconds to allow syncing to complete...`);
+
+  let indexed = 0;
+  let failed = 0;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (placeholderFiles.length === 0) break;
+
+    console.log(`\n⏳ Waiting ${delaySeconds} seconds before retry attempt ${attempt}/${maxRetries}...`);
+    await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+
+    console.log(`\n🔄 Retry attempt ${attempt}/${maxRetries} for ${placeholderFiles.length} files...`);
+    const stillPlaceholder = [];
+
+    for (const fileInfo of placeholderFiles) {
+      console.log(`  Retrying: ${fileInfo.relativePath}`);
+      const result = await indexFile(fileInfo.filePath, fileInfo.relativePath);
+
+      if (result.success) {
+        indexed++;
+        console.log(`  ✓ Successfully indexed`);
+      } else if (result.placeholder) {
+        stillPlaceholder.push(result);
+        console.log(`  ⏸️  Still a placeholder: ${result.details}`);
+      } else {
+        failed++;
+        console.log(`  ✗ Failed: ${result.error || result.reason}`);
+      }
+    }
+
+    placeholderFiles = stillPlaceholder;
+  }
+
+  if (placeholderFiles.length > 0) {
+    console.log(`\n⚠️  ${placeholderFiles.length} files still not synced after ${maxRetries} retries:`);
+    placeholderFiles.forEach(f => console.log(`   - ${f.relativePath}`));
+    failed += placeholderFiles.length;
+  }
+
+  return { indexed, failed };
 }
 
 async function main() {
@@ -249,18 +375,32 @@ async function main() {
     // Always use /home/user in the container (this is where MOUNT_DIR is mounted)
     const baseDir = '/home/user';
     console.log(`Indexing directory: ${baseDir} (maps to ${HOST_BASE} on host)`);
-    const result = await walkDirectory(baseDir, baseDir);
+
+    const placeholderFiles = [];
+    const result = await walkDirectory(baseDir, baseDir, placeholderFiles);
 
     const endTime = Date.now();
     const duration = (endTime - startTime) / 1000;
 
-    console.log(`\nIndexing completed in ${duration.toFixed(2)} seconds`);
+    console.log(`\nInitial indexing completed in ${duration.toFixed(2)} seconds`);
     console.log(`Files indexed: ${result.indexed}`);
     console.log(`Files skipped: ${result.skipped}`);
+    console.log(`Placeholder files detected: ${placeholderFiles.length}`);
+
+    // Retry placeholder files
+    if (placeholderFiles.length > 0) {
+      const retryResult = await retryPlaceholders(placeholderFiles, 2, 30);
+      console.log(`\n📊 Retry Results:`);
+      console.log(`  Successfully indexed: ${retryResult.indexed}`);
+      console.log(`  Still failed/pending: ${retryResult.failed}`);
+      console.log(`\n📈 Final totals:`);
+      console.log(`  Total indexed: ${result.indexed + retryResult.indexed}`);
+      console.log(`  Total skipped/failed: ${result.skipped - placeholderFiles.length + retryResult.failed}`);
+    }
 
     // Refresh the index
     await client.indices.refresh({ index: INDEX_NAME });
-    console.log('Index refreshed');
+    console.log('\n✓ Index refreshed');
 
   } catch (error) {
     console.error('Indexing failed:', error);

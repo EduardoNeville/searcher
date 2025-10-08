@@ -30,9 +30,96 @@ class DocumentProcessor {
     return this.supportedExtensions.has(ext);
   }
 
+  checkIfPlaceholder(filePath, buffer, ext) {
+    // Minimum valid file sizes for different formats
+    const MIN_SIZES = {
+      '.pdf': 200,        // PDF minimum with header
+      '.docx': 4096,      // DOCX minimum ZIP structure
+      '.pptx': 4096,      // PPTX minimum ZIP structure
+      '.xlsx': 4096,      // XLSX minimum ZIP structure
+      '.ppsx': 4096,      // PPSX minimum ZIP structure
+      '.potx': 4096,      // POTX minimum ZIP structure
+      '.odt': 4096,       // ODT minimum ZIP structure
+    };
+
+    // Check file size
+    const minSize = MIN_SIZES[ext] || 0;
+    if (minSize > 0 && buffer.length < minSize) {
+      return {
+        isPlaceholder: true,
+        reason: `File too small (${buffer.length} bytes, expected minimum ${minSize} bytes)`
+      };
+    }
+
+    // Check for ZIP-based formats (all Office Open XML and OpenDocument files)
+    const zipFormats = ['.docx', '.pptx', '.xlsx', '.ppsx', '.potx', '.odt'];
+    if (zipFormats.includes(ext)) {
+      // Check for ZIP signature (PK\x03\x04 at the start)
+      if (buffer.length >= 4) {
+        const signature = buffer.readUInt32LE(0);
+        // ZIP local file header signature: 0x04034b50 (little-endian)
+        if (signature !== 0x04034b50) {
+          return {
+            isPlaceholder: true,
+            reason: 'Invalid ZIP signature (file may be a cloud storage placeholder)'
+          };
+        }
+      }
+
+      // Additional check: ZIP files must be at least 22 bytes (end of central directory)
+      if (buffer.length < 22) {
+        return {
+          isPlaceholder: true,
+          reason: 'File too small to contain valid ZIP structure'
+        };
+      }
+    }
+
+    // Check for PDF signature
+    if (ext === '.pdf') {
+      if (buffer.length >= 5) {
+        const header = buffer.toString('utf8', 0, 5);
+        if (header !== '%PDF-') {
+          return {
+            isPlaceholder: true,
+            reason: 'Invalid PDF header (file may be a cloud storage placeholder)'
+          };
+        }
+      }
+    }
+
+    // Check for common cloud placeholder patterns
+    const contentPreview = buffer.toString('utf8', 0, Math.min(1024, buffer.length));
+    const placeholderPatterns = [
+      'CloudStation',
+      'SynologyDrive',
+      'BoxSync',
+      'OneDrive',
+      '.cloud',
+      'placeholder'
+    ];
+
+    for (const pattern of placeholderPatterns) {
+      if (contentPreview.includes(pattern)) {
+        return {
+          isPlaceholder: true,
+          reason: `Detected cloud storage placeholder pattern: ${pattern}`
+        };
+      }
+    }
+
+    return { isPlaceholder: false };
+  }
+
   async extractText(filePath) {
     const ext = path.extname(filePath).toLowerCase();
     const buffer = fs.readFileSync(filePath);
+
+    // Check for placeholder files or files that are still syncing
+    const placeholderCheck = this.checkIfPlaceholder(filePath, buffer, ext);
+    if (placeholderCheck.isPlaceholder) {
+      throw new Error(`PLACEHOLDER_FILE: ${placeholderCheck.reason}`);
+    }
 
     try {
       switch (ext) {
