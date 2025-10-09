@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, FileText, Clock, Folder, ExternalLink, File, Presentation, Sheet, BookOpen, History, X, Trash2 } from 'lucide-react';
+import { Search, FileText, Clock, Folder, ExternalLink, File, Presentation, Sheet, BookOpen, History, X, Trash2, HelpCircle, User, Filter, Calendar, HardDrive, UserCircle } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
+import { Label } from './components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
 
 interface SearchResult {
   id: string;
@@ -13,7 +15,10 @@ interface SearchResult {
   highlights: string[];
   size: number;
   modified: string;
+  created?: string;
   fileType?: string;
+  creator?: string;
+  lastEditor?: string;
 }
 
 interface SearchResponse {
@@ -33,6 +38,23 @@ interface HistoryItem {
   timestamp: string;
 }
 
+interface Filters {
+  fileTypes: string[];
+  createdDateOp: string;
+  createdDate: string;
+  createdDateEnd: string;
+  modifiedDateOp: string;
+  modifiedDate: string;
+  modifiedDateEnd: string;
+  creator: string;
+  editor: string;
+  sizeOp: string;
+  sizeValue: string;
+  sizeUnit: string;
+  sizeValueEnd: string;
+  booleanOp: string;
+}
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 function App() {
@@ -45,6 +67,24 @@ function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
+  const [showHelp, setShowHelp] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState<Filters>({
+    fileTypes: [],
+    createdDateOp: '>',
+    createdDate: '',
+    createdDateEnd: '',
+    modifiedDateOp: '>',
+    modifiedDate: '',
+    modifiedDateEnd: '',
+    creator: '',
+    editor: '',
+    sizeOp: '>',
+    sizeValue: '',
+    sizeUnit: 'MB',
+    sizeValueEnd: '',
+    booleanOp: 'AND'
+  });
 
   const fetchStats = useCallback(async () => {
     try {
@@ -199,6 +239,113 @@ function App() {
     ? history.filter(item => item.query.toLowerCase().includes(historySearch.toLowerCase()))
     : history;
 
+  const buildQueryFromFilters = () => {
+    const parts: string[] = [];
+
+    // Add text query if exists
+    if (query.trim()) {
+      parts.push(query.trim());
+    }
+
+    // Add file type filter
+    if (filters.fileTypes.length > 0) {
+      parts.push(`filetype:${filters.fileTypes.join(',')}`);
+    }
+
+    // Add created date filter
+    if (filters.createdDate) {
+      if (filters.createdDateEnd) {
+        // Range: from date to date
+        parts.push(`created:${filters.createdDate}..${filters.createdDateEnd}`);
+      } else {
+        // Just from date (>= operator - on or after)
+        parts.push(`created:>=${filters.createdDate}`);
+      }
+    }
+
+    // Add modified date filter
+    if (filters.modifiedDate) {
+      if (filters.modifiedDateEnd) {
+        // Range: from date to date
+        parts.push(`modified:${filters.modifiedDate}..${filters.modifiedDateEnd}`);
+      } else {
+        // Just from date (>= operator - on or after)
+        parts.push(`modified:>=${filters.modifiedDate}`);
+      }
+    }
+
+    // Add creator filter
+    if (filters.creator.trim()) {
+      parts.push(`creator:${filters.creator.trim()}`);
+    }
+
+    // Add editor filter
+    if (filters.editor.trim()) {
+      parts.push(`editor:${filters.editor.trim()}`);
+    }
+
+    // Add size filter
+    if (filters.sizeValue || filters.sizeValueEnd) {
+      if (filters.sizeValue && filters.sizeValueEnd) {
+        // Range: both min and max specified
+        parts.push(`size:${filters.sizeValue}${filters.sizeUnit}..${filters.sizeValueEnd}${filters.sizeUnit}`);
+      } else if (filters.sizeValue) {
+        // Only minimum specified (larger than)
+        parts.push(`size:>${filters.sizeValue}${filters.sizeUnit}`);
+      } else if (filters.sizeValueEnd) {
+        // Only maximum specified (smaller than)
+        parts.push(`size:<${filters.sizeValueEnd}${filters.sizeUnit}`);
+      }
+    }
+
+    return parts.join(' ');
+  };
+
+  const toggleFileType = (type: string) => {
+    setFilters(prev => ({
+      ...prev,
+      fileTypes: prev.fileTypes.includes(type)
+        ? prev.fileTypes.filter(t => t !== type)
+        : [...prev.fileTypes, type]
+    }));
+  };
+
+  const clearFilters = () => {
+    setFilters({
+      fileTypes: [],
+      createdDateOp: '>',
+      createdDate: '',
+      createdDateEnd: '',
+      modifiedDateOp: '>',
+      modifiedDate: '',
+      modifiedDateEnd: '',
+      creator: '',
+      editor: '',
+      sizeOp: '>',
+      sizeValue: '',
+      sizeUnit: 'MB',
+      sizeValueEnd: '',
+      booleanOp: 'AND'
+    });
+  };
+
+  const applyFilters = () => {
+    const filterQuery = buildQueryFromFilters();
+    setQuery(filterQuery);
+    // Trigger search with the new query
+    const searchEvent = new Event('submit') as any;
+    handleSearch(searchEvent);
+  };
+
+  const hasActiveFilters = () => {
+    return filters.fileTypes.length > 0 ||
+           filters.createdDate ||
+           filters.modifiedDate ||
+           filters.creator ||
+           filters.editor ||
+           filters.sizeValue;
+  };
+
   return (
     <div className="min-h-screen bg-background flex">
       {/* History Sidebar */}
@@ -332,17 +479,456 @@ function App() {
               <form onSubmit={handleSearch} className="flex gap-2">
                 <Input
                   type="text"
-                  placeholder="Search for text in files..."
+                  placeholder="Search with filters: filetype:pdf created:>2024-01-01 word1 AND word2"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   className="flex-1"
                 />
+                <Button
+                  type="button"
+                  variant={showFilters ? "default" : "outline"}
+                  size="icon"
+                  onClick={() => setShowFilters(!showFilters)}
+                  title="Toggle filters"
+                >
+                  <Filter className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowHelp(!showHelp)}
+                  title="Show help"
+                >
+                  <HelpCircle className="h-4 w-4" />
+                </Button>
                 <Button type="submit" disabled={loading}>
                   {loading ? 'Searching...' : 'Search'}
                 </Button>
               </form>
+
+              {showHelp && (
+                <div className="mt-4 p-4 bg-muted rounded-lg text-sm">
+                  <h3 className="font-semibold mb-2">Advanced Search Syntax</h3>
+                  <div className="space-y-2">
+                    <div>
+                      <strong>File Types:</strong> <code>filetype:pdf,docx,pptx</code>
+                    </div>
+                    <div>
+                      <strong>Boolean Operators:</strong> <code>word1 AND word2</code>, <code>word1 OR word2</code>
+                    </div>
+                    <div>
+                      <strong>Date Filters:</strong>
+                      <ul className="ml-4 mt-1">
+                        <li><code>created:&gt;2024-01-01</code> - After date</li>
+                        <li><code>modified:&lt;2024-12-31</code> - Before date</li>
+                        <li><code>created:2024-01-01..2024-12-31</code> - Date range</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <strong>User Filters:</strong> <code>creator:username</code>, <code>editor:username</code>
+                    </div>
+                    <div>
+                      <strong>Size Filters:</strong> <code>size:&gt;1MB</code>, <code>size:&lt;100KB</code>, <code>size:1MB..5MB</code>
+                    </div>
+                    <div className="mt-2 pt-2 border-t">
+                      <strong>Example:</strong> <code>filetype:pdf created:&gt;2024-01-01 budget AND report</code>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {showFilters && (
+                <div className="mt-4 p-4 border rounded-lg bg-card space-y-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                      <Filter className="h-5 w-5" />
+                      Advanced Filters
+                    </h3>
+                    {hasActiveFilters() && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={clearFilters}
+                      >
+                        Clear All
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* File Type Filter */}
+                  <div className="space-y-2">
+                    <Label className="flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      File Types
+                    </Label>
+                    <div className="flex flex-wrap gap-2">
+                      {['pdf', 'docx', 'pptx', 'xlsx'].map((type) => (
+                        <Button
+                          key={type}
+                          type="button"
+                          variant={filters.fileTypes.includes(type) ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => toggleFileType(type)}
+                        >
+                          {type.toUpperCase()}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Date Filters - Flight Ticket Style */}
+                  <div className="space-y-4">
+                    {/* Created Date */}
+                    <div className="space-y-3">
+                      <Label className="flex items-center gap-2 text-base">
+                        <Calendar className="h-5 w-5" />
+                        Created Date
+                      </Label>
+                      <div className="border-2 rounded-lg p-4 bg-card">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">From</label>
+                            <Input
+                              type="date"
+                              value={filters.createdDate}
+                              onChange={(e) => {
+                                setFilters(prev => ({
+                                  ...prev,
+                                  createdDate: e.target.value,
+                                  createdDateOp: prev.createdDateEnd ? 'range' : '>='
+                                }));
+                              }}
+                              className="h-12 text-base"
+                              placeholder="Start date"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">To (Optional)</label>
+                            <Input
+                              type="date"
+                              value={filters.createdDateEnd}
+                              onChange={(e) => {
+                                setFilters(prev => ({
+                                  ...prev,
+                                  createdDateEnd: e.target.value,
+                                  createdDateOp: e.target.value ? 'range' : '>='
+                                }));
+                              }}
+                              className="h-12 text-base"
+                              placeholder="End date"
+                              min={filters.createdDate}
+                            />
+                          </div>
+                        </div>
+                        {filters.createdDate && (
+                          <div className="mt-3 text-sm text-muted-foreground">
+                            {filters.createdDateEnd
+                              ? `Files created between ${filters.createdDate} and ${filters.createdDateEnd}`
+                              : `Files created from ${filters.createdDate} onwards`
+                            }
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Modified Date */}
+                    <div className="space-y-3">
+                      <Label className="flex items-center gap-2 text-base">
+                        <Calendar className="h-5 w-5" />
+                        Modified Date
+                      </Label>
+                      <div className="border-2 rounded-lg p-4 bg-card">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">From</label>
+                            <Input
+                              type="date"
+                              value={filters.modifiedDate}
+                              onChange={(e) => {
+                                setFilters(prev => ({
+                                  ...prev,
+                                  modifiedDate: e.target.value,
+                                  modifiedDateOp: prev.modifiedDateEnd ? 'range' : '>='
+                                }));
+                              }}
+                              className="h-12 text-base"
+                              placeholder="Start date"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">To (Optional)</label>
+                            <Input
+                              type="date"
+                              value={filters.modifiedDateEnd}
+                              onChange={(e) => {
+                                setFilters(prev => ({
+                                  ...prev,
+                                  modifiedDateEnd: e.target.value,
+                                  modifiedDateOp: e.target.value ? 'range' : '>='
+                                }));
+                              }}
+                              className="h-12 text-base"
+                              placeholder="End date"
+                              min={filters.modifiedDate}
+                            />
+                          </div>
+                        </div>
+                        {filters.modifiedDate && (
+                          <div className="mt-3 text-sm text-muted-foreground">
+                            {filters.modifiedDateEnd
+                              ? `Files modified between ${filters.modifiedDate} and ${filters.modifiedDateEnd}`
+                              : `Files modified from ${filters.modifiedDate} onwards`
+                            }
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* User Filters */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2">
+                        <UserCircle className="h-4 w-4" />
+                        Creator
+                      </Label>
+                      <Input
+                        type="text"
+                        value={filters.creator}
+                        onChange={(e) => setFilters(prev => ({ ...prev, creator: e.target.value }))}
+                        placeholder="Username"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2">
+                        <UserCircle className="h-4 w-4" />
+                        Last Editor
+                      </Label>
+                      <Input
+                        type="text"
+                        value={filters.editor}
+                        onChange={(e) => setFilters(prev => ({ ...prev, editor: e.target.value }))}
+                        placeholder="Username"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Size Filter - Flight Ticket Style */}
+                  <div className="space-y-3">
+                    <Label className="flex items-center gap-2 text-base">
+                      <HardDrive className="h-5 w-5" />
+                      File Size
+                    </Label>
+                    <div className="border-2 rounded-lg p-4 bg-card">
+                      {/* Size Unit Selector */}
+                      <div className="mb-4">
+                        <label className="text-sm font-medium text-muted-foreground mb-2 block">Unit</label>
+                        <div className="grid grid-cols-4 gap-2">
+                          {['B', 'KB', 'MB', 'GB'].map((unit) => (
+                            <button
+                              key={unit}
+                              type="button"
+                              onClick={() => setFilters(prev => ({ ...prev, sizeUnit: unit }))}
+                              className={`p-2 rounded-lg border-2 transition-all text-sm font-medium ${
+                                filters.sizeUnit === unit
+                                  ? 'border-primary bg-primary/10 shadow-sm'
+                                  : 'border-border hover:border-primary/50'
+                              }`}
+                            >
+                              {unit}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Size Range Inputs */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">
+                            Minimum (Optional)
+                          </label>
+                          <Input
+                            type="number"
+                            value={filters.sizeValue}
+                            onChange={(e) => {
+                              setFilters(prev => ({
+                                ...prev,
+                                sizeValue: e.target.value,
+                                sizeOp: prev.sizeValueEnd ? 'range' : '>'
+                              }));
+                            }}
+                            placeholder="Min size"
+                            className="h-12 text-base"
+                            min="0"
+                            step="0.01"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">
+                            Maximum (Optional)
+                          </label>
+                          <Input
+                            type="number"
+                            value={filters.sizeValueEnd}
+                            onChange={(e) => {
+                              setFilters(prev => ({
+                                ...prev,
+                                sizeValueEnd: e.target.value,
+                                sizeOp: e.target.value ? 'range' : '>'
+                              }));
+                            }}
+                            placeholder="Max size"
+                            className="h-12 text-base"
+                            min={filters.sizeValue || "0"}
+                            step="0.01"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Preview Text */}
+                      {(filters.sizeValue || filters.sizeValueEnd) && (
+                        <div className="mt-3 text-sm text-muted-foreground">
+                          {filters.sizeValue && filters.sizeValueEnd
+                            ? `Files between ${filters.sizeValue}${filters.sizeUnit} and ${filters.sizeValueEnd}${filters.sizeUnit}`
+                            : filters.sizeValue
+                            ? `Files larger than ${filters.sizeValue}${filters.sizeUnit}`
+                            : `Files smaller than ${filters.sizeValueEnd}${filters.sizeUnit}`
+                          }
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Boolean Operator */}
+                  <div className="space-y-2">
+                    <Label>Boolean Operator (for multiple search terms)</Label>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant={filters.booleanOp === 'AND' ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setFilters(prev => ({ ...prev, booleanOp: 'AND' }))}
+                      >
+                        AND (all terms)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={filters.booleanOp === 'OR' ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setFilters(prev => ({ ...prev, booleanOp: 'OR' }))}
+                      >
+                        OR (any term)
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Apply Filters Button */}
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      type="button"
+                      onClick={applyFilters}
+                      className="flex-1"
+                    >
+                      Apply Filters
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
+
+          {/* Active Filters Display */}
+          {hasActiveFilters() && (
+            <Card className="mb-4">
+              <CardContent className="pt-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium text-muted-foreground">Active Filters:</span>
+                  {filters.fileTypes.map(type => (
+                    <div key={type} className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                      <FileText className="h-3 w-3" />
+                      {type.toUpperCase()}
+                      <button
+                        onClick={() => toggleFileType(type)}
+                        className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                  {filters.createdDate && (
+                    <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                      <Calendar className="h-3 w-3" />
+                      Created: {filters.createdDateOp === 'range' ? `${filters.createdDate} to ${filters.createdDateEnd}` : `${filters.createdDateOp}${filters.createdDate}`}
+                      <button
+                        onClick={() => setFilters(prev => ({ ...prev, createdDate: '', createdDateEnd: '' }))}
+                        className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {filters.modifiedDate && (
+                    <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                      <Calendar className="h-3 w-3" />
+                      Modified: {filters.modifiedDateOp === 'range' ? `${filters.modifiedDate} to ${filters.modifiedDateEnd}` : `${filters.modifiedDateOp}${filters.modifiedDate}`}
+                      <button
+                        onClick={() => setFilters(prev => ({ ...prev, modifiedDate: '', modifiedDateEnd: '' }))}
+                        className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {filters.creator && (
+                    <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                      <UserCircle className="h-3 w-3" />
+                      Creator: {filters.creator}
+                      <button
+                        onClick={() => setFilters(prev => ({ ...prev, creator: '' }))}
+                        className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {filters.editor && (
+                    <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                      <UserCircle className="h-3 w-3" />
+                      Editor: {filters.editor}
+                      <button
+                        onClick={() => setFilters(prev => ({ ...prev, editor: '' }))}
+                        className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {filters.sizeValue && (
+                    <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                      <HardDrive className="h-3 w-3" />
+                      Size: {filters.sizeOp === 'range' ? `${filters.sizeValue}-${filters.sizeValueEnd}${filters.sizeUnit}` : `${filters.sizeOp}${filters.sizeValue}${filters.sizeUnit}`}
+                      <button
+                        onClick={() => setFilters(prev => ({ ...prev, sizeValue: '', sizeValueEnd: '' }))}
+                        className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearFilters}
+                    className="ml-auto"
+                  >
+                    Clear All
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {error && (
             <Card className="mb-6 border-destructive">
@@ -370,16 +956,28 @@ function App() {
                         {getFileIcon(result.filename, result.fileType)}
                         {result.filename}
                       </CardTitle>
-                      <CardDescription className="flex items-center gap-4 mt-1">
+                      <CardDescription className="flex items-center gap-4 mt-1 flex-wrap">
                         <span className="flex items-center gap-1">
                           <Folder className="h-3 w-3" />
                           {result.path}
                         </span>
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3" />
-                          {formatDate(result.modified)}
+                          Modified: {formatDate(result.modified)}
                         </span>
+                        {result.created && (
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            Created: {formatDate(result.created)}
+                          </span>
+                        )}
                         <span>{formatFileSize(result.size)}</span>
+                        {result.creator && (
+                          <span className="flex items-center gap-1">
+                            <User className="h-3 w-3" />
+                            {result.creator}
+                          </span>
+                        )}
                       </CardDescription>
                     </div>
                     <Button

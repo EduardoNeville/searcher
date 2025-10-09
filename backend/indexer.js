@@ -63,11 +63,14 @@ async function createIndex() {
             content: { type: 'text', analyzer: 'content_analyzer' },
             size: { type: 'long' },
             modified: { type: 'date' },
+            created: { type: 'date' },
             extension: { type: 'keyword' },
             fileType: { type: 'keyword' },
             syncStatus: { type: 'keyword' },
             syncError: { type: 'text' },
-            lastSyncAttempt: { type: 'date' }
+            lastSyncAttempt: { type: 'date' },
+            creator: { type: 'keyword' },
+            lastEditor: { type: 'keyword' }
           }
         }
       }
@@ -110,6 +113,36 @@ function isAllowedFile(filePath) {
   return true;
 }
 
+async function getFileMetadata(filePath, stats) {
+  const metadata = {
+    creator: null,
+    lastEditor: null,
+    created: stats.birthtime || stats.ctime
+  };
+
+  // Try to get file owner information (works on Linux/Mac)
+  try {
+    if (process.platform !== 'win32') {
+      const { execSync } = require('child_process');
+
+      // Get file owner username
+      try {
+        const owner = execSync(`stat -c '%U' "${filePath}" 2>/dev/null || stat -f '%Su' "${filePath}" 2>/dev/null`, { encoding: 'utf8' }).trim();
+        if (owner) {
+          metadata.creator = owner;
+          metadata.lastEditor = owner; // Default to same as creator
+        }
+      } catch (err) {
+        // Silently fail if stat command not available
+      }
+    }
+  } catch (error) {
+    // Metadata extraction is optional, don't fail indexing
+  }
+
+  return metadata;
+}
+
 async function trackPlaceholderFile(filePath, relativePath, reason) {
   try {
     const stats = fs.statSync(filePath);
@@ -117,6 +150,7 @@ async function trackPlaceholderFile(filePath, relativePath, reason) {
     const extension = path.extname(filePath);
     const fileType = documentProcessor.getFileType(filePath);
     const hostPath = containerToHostPath(filePath);
+    const metadata = await getFileMetadata(filePath, stats);
 
     await client.index({
       index: INDEX_NAME,
@@ -128,11 +162,14 @@ async function trackPlaceholderFile(filePath, relativePath, reason) {
         content: '',
         size: stats.size,
         modified: stats.mtime,
+        created: metadata.created,
         extension,
         fileType,
         syncStatus: 'pending_sync',
         syncError: reason,
-        lastSyncAttempt: new Date()
+        lastSyncAttempt: new Date(),
+        creator: metadata.creator,
+        lastEditor: metadata.lastEditor
       }
     });
   } catch (error) {
@@ -191,6 +228,7 @@ async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRe
 
     const hostPath = containerToHostPath(filePath);
     const hostRelativePath = containerToHostPath(relativePath);
+    const metadata = await getFileMetadata(filePath, stats);
 
     // Chunk the content for large documents
     const chunks = chunkContent(content);
@@ -215,11 +253,14 @@ async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRe
           content: chunk.content,
           size: stats.size,
           modified: stats.mtime,
+          created: metadata.created,
           extension,
           fileType,
           syncStatus: 'synced',
           syncError: null,
           lastSyncAttempt: new Date(),
+          creator: metadata.creator,
+          lastEditor: metadata.lastEditor,
           // Chunk metadata
           isChunked: chunks.length > 1,
           chunkIndex: chunk.chunkIndex,

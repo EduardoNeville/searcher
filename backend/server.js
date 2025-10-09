@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { Client } = require('@elastic/elasticsearch');
 const SearchHistory = require('./searchHistory');
+const QueryParser = require('./queryParser');
 
 const app = express();
 const port = 3001;
@@ -15,8 +16,9 @@ const client = new Client({
   node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
 });
 
-// Initialize search history
+// Initialize search history and query parser
 const searchHistory = new SearchHistory();
+const queryParser = new QueryParser();
 
 app.use(cors());
 app.use(express.json());
@@ -40,17 +42,30 @@ app.get('/search', async (req, res) => {
       return res.status(400).json({ error: 'Query parameter q is required' });
     }
 
+    // Parse the query using the advanced query parser
+    let parsedQuery, elasticsearchQuery;
+
+    try {
+      parsedQuery = queryParser.parse(q);
+      elasticsearchQuery = queryParser.buildElasticsearchQuery(parsedQuery);
+
+      // Log the parsed query for debugging
+      console.log('Query:', q);
+      console.log('Parsed filters:', JSON.stringify(parsedQuery.filters, null, 2));
+      console.log('Elasticsearch query:', JSON.stringify(elasticsearchQuery, null, 2));
+    } catch (parseError) {
+      console.error('Query parsing error:', parseError);
+      return res.status(400).json({
+        error: 'Invalid query syntax',
+        message: parseError.message,
+        query: q
+      });
+    }
+
     const searchResponse = await client.search({
       index: 'files',
       body: {
-        query: {
-          multi_match: {
-            query: q,
-            fields: ['content^2', 'filename', 'path'],
-            type: 'best_fields',
-            fuzziness: 'AUTO'
-          }
-        },
+        query: elasticsearchQuery,
         highlight: {
           fields: {
             content: {
@@ -86,7 +101,10 @@ app.get('/search', async (req, res) => {
           highlights: hit.highlight?.content || [],
           size: source.size,
           modified: source.modified,
+          created: source.created,
           fileType: source.fileType,
+          creator: source.creator,
+          lastEditor: source.lastEditor,
           isChunked: source.isChunked || false,
           totalChunks: source.totalChunks || 1,
           chunks: source.isChunked ? [{ index: source.chunkIndex, score: hit._score }] : []
