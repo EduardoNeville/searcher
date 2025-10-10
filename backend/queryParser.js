@@ -41,58 +41,71 @@ class QueryParser {
 
     let remainingQuery = query;
 
-    // Extract filetype filter
+    // Extract filetype filter - remove ALL occurrences
     const filetypeMatches = [...query.matchAll(this.filterPatterns.filetype)];
     if (filetypeMatches.length > 0) {
+      // Collect unique file types from all matches
+      const allTypes = new Set();
       filetypeMatches.forEach(match => {
         const types = match[1].split(',').map(t => t.trim().toLowerCase());
-        filters.fileTypes.push(...types);
-        remainingQuery = remainingQuery.replace(match[0], '');
+        types.forEach(t => allTypes.add(t));
       });
+      filters.fileTypes = Array.from(allTypes);
+
+      // Remove ALL filetype patterns from query
+      remainingQuery = remainingQuery.replace(this.filterPatterns.filetype, '');
     }
 
-    // Extract created date filter
+    // Extract created date filter - remove ALL occurrences
     const createdMatches = [...query.matchAll(this.filterPatterns.created)];
     if (createdMatches.length > 0) {
       filters.created = this.parseDateFilter(createdMatches[0][1]);
-      remainingQuery = remainingQuery.replace(createdMatches[0][0], '');
+      // Remove ALL created date patterns from query
+      remainingQuery = remainingQuery.replace(this.filterPatterns.created, '');
     }
 
-    // Extract modified date filter
+    // Extract modified date filter - remove ALL occurrences
     const modifiedMatches = [...query.matchAll(this.filterPatterns.modified)];
     if (modifiedMatches.length > 0) {
       filters.modified = this.parseDateFilter(modifiedMatches[0][1]);
-      remainingQuery = remainingQuery.replace(modifiedMatches[0][0], '');
+      // Remove ALL modified date patterns from query
+      remainingQuery = remainingQuery.replace(this.filterPatterns.modified, '');
     }
 
-    // Extract creator filter
+    // Extract creator filter - remove ALL occurrences
     const creatorMatches = [...query.matchAll(this.filterPatterns.creator)];
     if (creatorMatches.length > 0) {
       filters.creator = creatorMatches[0][1];
-      remainingQuery = remainingQuery.replace(creatorMatches[0][0], '');
+      // Remove ALL creator patterns from query
+      remainingQuery = remainingQuery.replace(this.filterPatterns.creator, '');
     }
 
-    // Extract editor filter
+    // Extract editor filter - remove ALL occurrences
     const editorMatches = [...query.matchAll(this.filterPatterns.editor)];
     if (editorMatches.length > 0) {
       filters.editor = editorMatches[0][1];
-      remainingQuery = remainingQuery.replace(editorMatches[0][0], '');
+      // Remove ALL editor patterns from query
+      remainingQuery = remainingQuery.replace(this.filterPatterns.editor, '');
     }
 
-    // Extract size filter
+    // Extract size filter - remove ALL occurrences
     const sizeMatches = [...query.matchAll(this.filterPatterns.size)];
     if (sizeMatches.length > 0) {
       try {
         filters.size = this.parseSizeFilter(sizeMatches[0][1]);
-        remainingQuery = remainingQuery.replace(sizeMatches[0][0], '');
+        // Remove ALL size patterns from query
+        remainingQuery = remainingQuery.replace(this.filterPatterns.size, '');
       } catch (error) {
         console.error('Size filter parsing error:', error.message);
         throw new Error(`Invalid size filter: ${error.message}`);
       }
     }
 
+    // Clean up extra whitespace
+    remainingQuery = remainingQuery.replace(/\s+/g, ' ').trim();
+
     // Parse boolean operators in remaining text query
-    const textQuery = this.parseTextQuery(remainingQuery.trim());
+    const textQuery = this.parseTextQuery(remainingQuery);
 
     return {
       filters,
@@ -470,13 +483,100 @@ class QueryParser {
         };
       }
 
-      // For fuzzy matching (OR operator or single words)
+      // For simple text queries, split into words and require ALL words to be present
+      // Use constant_score to avoid document length bias - small documents score equally to large ones
+      const words = textQuery.value.trim().split(/\s+/).filter(w => w.length > 0);
+
+      if (words.length === 1) {
+        // Single word - use constant_score for equal scoring regardless of document size
+        return {
+          bool: {
+            should: [
+              {
+                constant_score: {
+                  filter: { match: { content: words[0] } },
+                  boost: 1.0
+                }
+              },
+              {
+                constant_score: {
+                  filter: { match: { filename: words[0] } },
+                  boost: 2.0  // Filename matches are more important
+                }
+              },
+              {
+                constant_score: {
+                  filter: { match: { path: words[0] } },
+                  boost: 1.5
+                }
+              }
+            ],
+            minimum_should_match: 1
+          }
+        };
+      }
+
+      // Multiple words - each word MUST exist, with constant scoring to avoid size bias
+      // All documents that contain ALL the words get equal base score
+      // Then add proximity bonus for words appearing together
       return {
-        multi_match: {
-          query: textQuery.value,
-          fields: ['content^2', 'filename', 'path'],
-          type: 'best_fields',
-          fuzziness: 'AUTO'
+        bool: {
+          must: words.map(word => ({
+            // Each word must appear - use constant_score to avoid document length penalty
+            bool: {
+              should: [
+                {
+                  constant_score: {
+                    filter: { match: { content: word } },
+                    boost: 1.0
+                  }
+                },
+                {
+                  constant_score: {
+                    filter: { match: { filename: word } },
+                    boost: 2.0
+                  }
+                },
+                {
+                  constant_score: {
+                    filter: { match: { path: word } },
+                    boost: 1.5
+                  }
+                }
+              ],
+              minimum_should_match: 1
+            }
+          })),
+          should: [
+            // Boost score when words appear close together as a phrase
+            {
+              match_phrase: {
+                content: {
+                  query: textQuery.value,
+                  slop: 50,  // Allow words to be far apart but still give proximity boost
+                  boost: 1.0  // Add proximity bonus
+                }
+              }
+            },
+            {
+              match_phrase: {
+                filename: {
+                  query: textQuery.value,
+                  slop: 10,
+                  boost: 2.0  // Higher boost for filename phrase matches
+                }
+              }
+            },
+            {
+              match_phrase: {
+                path: {
+                  query: textQuery.value,
+                  slop: 10,
+                  boost: 1.0
+                }
+              }
+            }
+          ]
         }
       };
     }

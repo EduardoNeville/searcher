@@ -31,18 +31,18 @@ class DocumentProcessor {
   }
 
   checkIfPlaceholder(filePath, buffer, ext) {
-    // Minimum valid file sizes for different formats
+    // Minimum valid file sizes for different formats - reduced to catch only true placeholders
     const MIN_SIZES = {
-      '.pdf': 200,        // PDF minimum with header
-      '.docx': 4096,      // DOCX minimum ZIP structure
-      '.pptx': 4096,      // PPTX minimum ZIP structure
-      '.xlsx': 4096,      // XLSX minimum ZIP structure
-      '.ppsx': 4096,      // PPSX minimum ZIP structure
-      '.potx': 4096,      // POTX minimum ZIP structure
-      '.odt': 4096,       // ODT minimum ZIP structure
+      '.pdf': 50,         // PDF minimum with header (reduced from 200)
+      '.docx': 1024,      // DOCX minimum ZIP structure (reduced from 4096)
+      '.pptx': 1024,      // PPTX minimum ZIP structure (reduced from 4096)
+      '.xlsx': 1024,      // XLSX minimum ZIP structure (reduced from 4096)
+      '.ppsx': 1024,      // PPSX minimum ZIP structure (reduced from 4096)
+      '.potx': 1024,      // POTX minimum ZIP structure (reduced from 4096)
+      '.odt': 1024,       // ODT minimum ZIP structure (reduced from 4096)
     };
 
-    // Check file size
+    // Check file size - only catch extremely small files that are clearly not real documents
     const minSize = MIN_SIZES[ext] || 0;
     if (minSize > 0 && buffer.length < minSize) {
       return {
@@ -232,22 +232,18 @@ class DocumentProcessor {
         console.log(`  ℹ️  Suppressed ${warnings.length} PDF parsing warnings (non-standard commands)`);
       }
 
-      // Clean up the extracted text
-      let text = data.text;
+      // Return raw text - NO cleaning, NO normalization, NO modifications
+      let text = data.text || '';
 
-      // Remove excessive whitespace and normalize line breaks
-      text = text.replace(/\s+/g, ' ')
-                 .replace(/\n+/g, '\n')
-                 .trim();
-
-      // Extract metadata if available
+      // Extract metadata if available and prepend it
       let metadata = '';
       if (data.info) {
-        if (data.info.Title) metadata += `Title: ${data.info.Title}\n`;
-        if (data.info.Subject) metadata += `Subject: ${data.info.Subject}\n`;
-        if (data.info.Keywords) metadata += `Keywords: ${data.info.Keywords}\n`;
+        if (data.info.Title) metadata += `${data.info.Title} `;
+        if (data.info.Subject) metadata += `${data.info.Subject} `;
+        if (data.info.Keywords) metadata += `${data.info.Keywords} `;
       }
 
+      // Return everything exactly as extracted - raw and unmodified
       return metadata + text;
     } catch (error) {
       // Always restore stderr before handling errors
@@ -308,12 +304,10 @@ class DocumentProcessor {
 
   async extractDocText(buffer) {
     try {
-      // Limited support for .doc files - try to extract readable text
+      // Limited support for .doc files - extract raw text
       const text = buffer.toString('utf8');
-      // Remove control characters and extract readable text
-      return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
-                 .replace(/\s+/g, ' ')
-                 .trim();
+      // Return raw text - no modifications
+      return text;
     } catch (error) {
       console.warn(`  ⚠️  DOC extraction error: ${error.message}`);
       return '';
@@ -352,8 +346,8 @@ class DocumentProcessor {
 
         for (const slide of slides) {
           const slideText = slide.getText();
-          if (slideText && slideText.trim()) {
-            allText.push(slideText.trim());
+          if (slideText) {
+            allText.push(slideText); // No trimming - keep raw text
           }
         }
 
@@ -406,8 +400,8 @@ class DocumentProcessor {
                 xml2js.parseString(xmlData, (err, result) => {
                   if (!err && result) {
                     const text = this.extractTextFromXml(result);
-                    if (text && text.trim()) {
-                      slideTexts.push(text.trim());
+                    if (text) {
+                      slideTexts.push(text); // No trimming - keep raw text
                     }
                   }
                   entriesProcessed++;
@@ -452,11 +446,10 @@ class DocumentProcessor {
 
   async extractPptText(buffer) {
     try {
-      // Limited support for .ppt files
+      // Limited support for .ppt files - extract raw text
       const text = buffer.toString('utf8');
-      return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
-                 .replace(/\s+/g, ' ')
-                 .trim();
+      // Return raw text - no modifications
+      return text;
     } catch (error) {
       console.warn(`  ⚠️  PPT extraction error: ${error.message}`);
       return '';
@@ -469,11 +462,9 @@ class DocumentProcessor {
       if (path.extname(filePath).toLowerCase() === '.xlsx') {
         return await this.extractXlsxText(buffer);
       } else {
-        // Basic text extraction for .xls files
+        // Basic text extraction for .xls files - return raw text
         const text = buffer.toString('utf8');
-        return text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
-                   .replace(/\s+/g, ' ')
-                   .trim();
+        return text;
       }
     } catch (error) {
       console.warn(`  ⚠️  Excel extraction error: ${error.message}`);
@@ -621,19 +612,10 @@ class DocumentProcessor {
 
   async extractRtfText(buffer) {
     try {
-      // Basic RTF text extraction (removes RTF commands)
+      // Extract raw RTF text - no modifications
       const rtfContent = buffer.toString('utf8');
-
-      // Remove RTF control words and commands
-      let text = rtfContent
-        .replace(/\\[a-z0-9-]+\s?/gi, ' ')  // Remove control words
-        .replace(/[{}]/g, ' ')              // Remove braces
-        .replace(/\\\\/g, '\\')             // Handle escaped backslashes
-        .replace(/\\'/g, "'")               // Handle escaped quotes
-        .replace(/\s+/g, ' ')               // Normalize whitespace
-        .trim();
-
-      return text;
+      // Return raw content - Elasticsearch will handle tokenization
+      return rtfContent;
     } catch (error) {
       console.warn(`  ⚠️  RTF extraction error: ${error.message}`);
       return '';

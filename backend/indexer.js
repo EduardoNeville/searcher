@@ -47,20 +47,20 @@ async function createIndex() {
         settings: {
           analysis: {
             analyzer: {
-              content_analyzer: {
+              camelcase_analyzer: {
                 type: 'custom',
                 tokenizer: 'standard',
-                filter: ['lowercase', 'stop']
+                filter: ['lowercase', 'word_delimiter_graph']  // Split CamelCase and joined words
               }
             }
           }
         },
         mappings: {
           properties: {
-            filename: { type: 'text', analyzer: 'content_analyzer' },
+            filename: { type: 'text', analyzer: 'camelcase_analyzer' },  // Split CamelCase words
             path: { type: 'keyword' },
             hostPath: { type: 'keyword' },
-            content: { type: 'text', analyzer: 'content_analyzer' },
+            content: { type: 'text', analyzer: 'camelcase_analyzer' },  // Split CamelCase words
             size: { type: 'long' },
             modified: { type: 'date' },
             created: { type: 'date' },
@@ -183,7 +183,13 @@ function chunkContent(content, chunkSize = 500000) {
   const overlapSize = 5000; // 5KB overlap between chunks
 
   if (!content || content.length <= chunkSize) {
-    return [content || ''];
+    // Return a properly formatted chunk object even for single chunks
+    return [{
+      content: content || '',
+      chunkIndex: 0,
+      chunkStart: 0,
+      chunkEnd: (content || '').length
+    }];
   }
 
   let position = 0;
@@ -220,7 +226,17 @@ async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRe
     } else {
       console.log(`Processing: ${relativePath}`);
     }
+
     const content = await documentProcessor.extractText(filePath);
+
+    // Log extraction results
+    if (!content || content.length === 0) {
+      console.log(`  ⚠️  WARNING: No content extracted from file!`);
+    } else {
+      // Show first 100 characters of extracted content for verification
+      const preview = content.substring(0, 100).replace(/\n/g, ' ');
+      console.log(`  📄 Content preview: "${preview}${content.length > 100 ? '...' : ''}"`);
+    }
 
     const filename = path.basename(filePath);
     const extension = path.extname(filePath);
@@ -269,6 +285,17 @@ async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRe
           chunkEnd: chunk.chunkEnd
         }
       });
+    }
+
+    // Log successful processing
+    const sizeFormatted = (stats.size / 1024).toFixed(1);
+    const contentLength = content.length;
+    const wordCount = content.split(/\s+/).filter(w => w.length > 0).length;
+
+    if (chunks.length > 1) {
+      console.log(`  ✓ Successfully indexed (${sizeFormatted}KB, ${contentLength} chars, ${wordCount} words, ${chunks.length} chunks)`);
+    } else {
+      console.log(`  ✓ Successfully indexed (${sizeFormatted}KB, ${contentLength} chars, ${wordCount} words)`);
     }
 
     return { success: true };
