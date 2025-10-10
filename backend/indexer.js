@@ -96,9 +96,16 @@ function isHiddenFile(filePath) {
 }
 
 function isAllowedFile(filePath) {
-  // Only allow PDF, DOCX, and PPTX files
+  // Allow PDF, Word documents (all formats), and PowerPoint presentations (all formats)
   const ext = path.extname(filePath).toLowerCase();
-  const allowedExtensions = ['.pdf', '.docx', '.pptx'];
+  const allowedExtensions = [
+    // PDF
+    '.pdf',
+    // Word documents
+    '.doc', '.docx', '.docm', '.dot', '.dotx', '.dotm', '.odt', '.rtf',
+    // PowerPoint presentations
+    '.ppt', '.pptx', '.pptm', '.pot', '.potx', '.potm', '.pps', '.ppsx', '.ppsm'
+  ];
 
   if (!allowedExtensions.includes(ext)) {
     return false;

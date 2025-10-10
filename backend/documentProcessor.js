@@ -33,13 +33,19 @@ class DocumentProcessor {
   checkIfPlaceholder(filePath, buffer, ext) {
     // Minimum valid file sizes for different formats - reduced to catch only true placeholders
     const MIN_SIZES = {
-      '.pdf': 50,         // PDF minimum with header (reduced from 200)
-      '.docx': 1024,      // DOCX minimum ZIP structure (reduced from 4096)
-      '.pptx': 1024,      // PPTX minimum ZIP structure (reduced from 4096)
-      '.xlsx': 1024,      // XLSX minimum ZIP structure (reduced from 4096)
-      '.ppsx': 1024,      // PPSX minimum ZIP structure (reduced from 4096)
-      '.potx': 1024,      // POTX minimum ZIP structure (reduced from 4096)
-      '.odt': 1024,       // ODT minimum ZIP structure (reduced from 4096)
+      '.pdf': 50,         // PDF minimum with header
+      '.docx': 1024,      // DOCX minimum ZIP structure
+      '.docm': 1024,      // DOCM minimum ZIP structure
+      '.dotx': 1024,      // DOTX minimum ZIP structure
+      '.dotm': 1024,      // DOTM minimum ZIP structure
+      '.pptx': 1024,      // PPTX minimum ZIP structure
+      '.pptm': 1024,      // PPTM minimum ZIP structure
+      '.ppsx': 1024,      // PPSX minimum ZIP structure
+      '.ppsm': 1024,      // PPSM minimum ZIP structure
+      '.potx': 1024,      // POTX minimum ZIP structure
+      '.potm': 1024,      // POTM minimum ZIP structure
+      '.xlsx': 1024,      // XLSX minimum ZIP structure
+      '.odt': 1024,       // ODT minimum ZIP structure
     };
 
     // Check file size - only catch extremely small files that are clearly not real documents
@@ -52,7 +58,11 @@ class DocumentProcessor {
     }
 
     // Check for ZIP-based formats (all Office Open XML and OpenDocument files)
-    const zipFormats = ['.docx', '.pptx', '.xlsx', '.ppsx', '.potx', '.odt'];
+    const zipFormats = [
+      '.docx', '.docm', '.dotx', '.dotm',
+      '.pptx', '.pptm', '.ppsx', '.ppsm', '.potx', '.potm',
+      '.xlsx', '.odt'
+    ];
     if (zipFormats.includes(ext)) {
       // Check for ZIP signature (PK\x03\x04 at the start)
       if (buffer.length >= 4) {
@@ -128,20 +138,31 @@ class DocumentProcessor {
           case '.pdf':
             return await this.extractPdfText(buffer);
 
+          // Word documents - all formats
           case '.docx':
+          case '.docm':
+          case '.dotx':
+          case '.dotm':
             return await this.extractDocxText(buffer);
 
           case '.doc':
-            // For .doc files, we'll try to read as text (limited support)
+          case '.dot':
+            // For .doc/.dot files, try basic text extraction (limited support)
             return await this.extractDocText(buffer);
 
+          // PowerPoint presentations - all formats
           case '.pptx':
+          case '.pptm':
           case '.ppsx':
+          case '.ppsm':
           case '.potx':
+          case '.potm':
             return await this.extractPptxText(buffer);
 
           case '.ppt':
-            // For .ppt files, we'll try basic text extraction (limited support)
+          case '.pps':
+          case '.pot':
+            // For .ppt/.pps/.pot files, try basic text extraction (limited support)
             return await this.extractPptText(buffer);
 
           case '.xlsx':
@@ -673,8 +694,13 @@ class DocumentProcessor {
     const ext = path.extname(filePath).toLowerCase();
 
     if (['.pdf'].includes(ext)) return 'pdf';
-    if (['.docx', '.doc', '.odt', '.rtf'].includes(ext)) return 'document';
-    if (['.pptx', '.ppt', '.ppsx', '.potx'].includes(ext)) return 'presentation';
+
+    // All Word document formats
+    if (['.doc', '.docx', '.docm', '.dot', '.dotx', '.dotm', '.odt', '.rtf'].includes(ext)) return 'document';
+
+    // All PowerPoint presentation formats
+    if (['.ppt', '.pptx', '.pptm', '.pot', '.potx', '.potm', '.pps', '.ppsx', '.ppsm'].includes(ext)) return 'presentation';
+
     if (['.xlsx', '.xls'].includes(ext)) return 'spreadsheet';
 
     // Programming and markup files
