@@ -11,7 +11,8 @@ services:
       - "9300:9300"
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
-      - ${HOME}:/home/user:ro  # Mount current user's home directory as read-only (Linux & macOS)
+      # Works on Linux, macOS, and Windows (using WSL path or native Windows path)
+      - ${SEARCH_HOME:-${HOME:-C:/Users/Public/Documents}}:/home/user:ro
     networks:
       - search_network
 
@@ -21,12 +22,13 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      - ${HOME}:/home/user:ro  # Mount current user's home directory as read-only (Linux & macOS)
-      - ${HOME}/.file_open_commands:/app/file_commands  # Writable directory for commands
-      - search_history_data:/app/data  # Persistent volume for search history database
+      # Works on Linux, macOS, and Windows
+      - ${SEARCH_HOME:-${HOME:-C:/Users/Public/Documents}}:/home/user:ro
+      - ${SEARCH_HOME:-${HOME:-C:/Users/Public/Documents}}/.file_open_commands:/app/file_commands
+      - search_history_data:/app/data
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - HOST_HOME=${HOME}
+      - HOST_HOME=${SEARCH_HOME:-${HOME:-C:/Users/Public/Documents}}
       - DB_DIR=/app/data
     depends_on:
       - elasticsearch
