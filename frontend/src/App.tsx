@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, FileText, Clock, Folder, ExternalLink, File, Presentation, Sheet, BookOpen, History, X, Trash2, HelpCircle, User, Filter, Calendar, HardDrive, UserCircle } from 'lucide-react';
+import { Search, FileText, Clock, Folder, ExternalLink, File, Presentation, Sheet, BookOpen, History, X, Trash2, HelpCircle, User, Filter, Calendar as CalendarIcon, HardDrive, UserCircle, ChevronDown } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
 import { Label } from './components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
+import { Calendar } from './components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
+import MultipleSelector, { type Option } from './components/ui/multiselector';
 
 interface SearchResult {
   id: string;
@@ -57,6 +60,33 @@ interface Filters {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
+// File type options for MultiSelector
+const FILE_TYPE_OPTIONS: Option[] = [
+  // PDF
+  { value: 'pdf', label: 'PDF', group: 'Documents' },
+
+  // Word Documents
+  { value: 'doc', label: 'DOC (Word 97-2003)', group: 'Word Documents' },
+  { value: 'docx', label: 'DOCX (Word)', group: 'Word Documents' },
+  { value: 'docm', label: 'DOCM (Word Macro)', group: 'Word Documents' },
+  { value: 'dot', label: 'DOT (Word Template 97-2003)', group: 'Word Documents' },
+  { value: 'dotx', label: 'DOTX (Word Template)', group: 'Word Documents' },
+  { value: 'dotm', label: 'DOTM (Word Template Macro)', group: 'Word Documents' },
+  { value: 'odt', label: 'ODT (OpenDocument)', group: 'Word Documents' },
+  { value: 'rtf', label: 'RTF (Rich Text)', group: 'Word Documents' },
+
+  // PowerPoint Presentations
+  { value: 'ppt', label: 'PPT (PowerPoint 97-2003)', group: 'Presentations' },
+  { value: 'pptx', label: 'PPTX (PowerPoint)', group: 'Presentations' },
+  { value: 'pptm', label: 'PPTM (PowerPoint Macro)', group: 'Presentations' },
+  { value: 'pot', label: 'POT (PowerPoint Template 97-2003)', group: 'Presentations' },
+  { value: 'potx', label: 'POTX (PowerPoint Template)', group: 'Presentations' },
+  { value: 'potm', label: 'POTM (PowerPoint Template Macro)', group: 'Presentations' },
+  { value: 'pps', label: 'PPS (PowerPoint Show 97-2003)', group: 'Presentations' },
+  { value: 'ppsx', label: 'PPSX (PowerPoint Show)', group: 'Presentations' },
+  { value: 'ppsm', label: 'PPSM (PowerPoint Show Macro)', group: 'Presentations' },
+];
+
 function App() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -85,6 +115,15 @@ function App() {
     sizeValueEnd: '',
     booleanOp: 'AND'
   });
+
+  // Popover states for date pickers
+  const [createdStartOpen, setCreatedStartOpen] = useState(false);
+  const [createdEndOpen, setCreatedEndOpen] = useState(false);
+  const [modifiedStartOpen, setModifiedStartOpen] = useState(false);
+  const [modifiedEndOpen, setModifiedEndOpen] = useState(false);
+
+  // Selected file types for MultiSelector
+  const [selectedFileTypes, setSelectedFileTypes] = useState<Option[]>([]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -247,9 +286,10 @@ function App() {
       parts.push(query.trim());
     }
 
-    // Add file type filter
-    if (filters.fileTypes.length > 0) {
-      parts.push(`filetype:${filters.fileTypes.join(',')}`);
+    // Add file type filter from MultiSelector
+    if (selectedFileTypes.length > 0) {
+      const fileTypeValues = selectedFileTypes.map(ft => ft.value).join(',');
+      parts.push(`filetype:${fileTypeValues}`);
     }
 
     // Add created date filter
@@ -301,15 +341,6 @@ function App() {
     return parts.join(' ');
   };
 
-  const toggleFileType = (type: string) => {
-    setFilters(prev => ({
-      ...prev,
-      fileTypes: prev.fileTypes.includes(type)
-        ? prev.fileTypes.filter(t => t !== type)
-        : [...prev.fileTypes, type]
-    }));
-  };
-
   const clearFilters = () => {
     setFilters({
       fileTypes: [],
@@ -327,6 +358,7 @@ function App() {
       sizeValueEnd: '',
       booleanOp: 'AND'
     });
+    setSelectedFileTypes([]);
   };
 
   const applyFilters = () => {
@@ -338,7 +370,7 @@ function App() {
   };
 
   const hasActiveFilters = () => {
-    return filters.fileTypes.length > 0 ||
+    return selectedFileTypes.length > 0 ||
            filters.createdDate ||
            filters.modifiedDate ||
            filters.creator ||
@@ -563,19 +595,16 @@ function App() {
                       <FileText className="h-4 w-4" />
                       File Types
                     </Label>
-                    <div className="flex flex-wrap gap-2">
-                      {['pdf', 'docx', 'pptx', 'xlsx'].map((type) => (
-                        <Button
-                          key={type}
-                          type="button"
-                          variant={filters.fileTypes.includes(type) ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => toggleFileType(type)}
-                        >
-                          {type.toUpperCase()}
-                        </Button>
-                      ))}
-                    </div>
+                    <MultipleSelector
+                      value={selectedFileTypes}
+                      onChange={setSelectedFileTypes}
+                      defaultOptions={FILE_TYPE_OPTIONS}
+                      placeholder="Select file types..."
+                      groupBy="group"
+                      emptyIndicator={
+                        <p className="text-center text-sm text-muted-foreground">No file types found</p>
+                      }
+                    />
                   </div>
 
                   {/* Date Filters - Flight Ticket Style */}
@@ -583,43 +612,69 @@ function App() {
                     {/* Created Date */}
                     <div className="space-y-3">
                       <Label className="flex items-center gap-2 text-base">
-                        <Calendar className="h-5 w-5" />
+                        <CalendarIcon className="h-5 w-5" />
                         Created Date
                       </Label>
                       <div className="border-2 rounded-lg p-4 bg-card">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="space-y-2">
                             <label className="text-sm font-medium text-muted-foreground">From</label>
-                            <Input
-                              type="date"
-                              value={filters.createdDate}
-                              onChange={(e) => {
-                                setFilters(prev => ({
-                                  ...prev,
-                                  createdDate: e.target.value,
-                                  createdDateOp: prev.createdDateEnd ? 'range' : '>='
-                                }));
-                              }}
-                              className="h-12 text-base"
-                              placeholder="Start date"
-                            />
+                            <Popover open={createdStartOpen} onOpenChange={setCreatedStartOpen}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  className="w-full h-12 justify-between font-normal text-base"
+                                >
+                                  {filters.createdDate ? new Date(filters.createdDate).toLocaleDateString() : "Select date"}
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={filters.createdDate ? new Date(filters.createdDate) : undefined}
+                                  captionLayout="dropdown"
+                                  onSelect={(date) => {
+                                    setFilters(prev => ({
+                                      ...prev,
+                                      createdDate: date ? date.toISOString().split('T')[0] : '',
+                                      createdDateOp: prev.createdDateEnd ? 'range' : '>='
+                                    }));
+                                    setCreatedStartOpen(false);
+                                  }}
+                                />
+                              </PopoverContent>
+                            </Popover>
                           </div>
                           <div className="space-y-2">
                             <label className="text-sm font-medium text-muted-foreground">To (Optional)</label>
-                            <Input
-                              type="date"
-                              value={filters.createdDateEnd}
-                              onChange={(e) => {
-                                setFilters(prev => ({
-                                  ...prev,
-                                  createdDateEnd: e.target.value,
-                                  createdDateOp: e.target.value ? 'range' : '>='
-                                }));
-                              }}
-                              className="h-12 text-base"
-                              placeholder="End date"
-                              min={filters.createdDate}
-                            />
+                            <Popover open={createdEndOpen} onOpenChange={setCreatedEndOpen}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  className="w-full h-12 justify-between font-normal text-base"
+                                >
+                                  {filters.createdDateEnd ? new Date(filters.createdDateEnd).toLocaleDateString() : "Select date"}
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={filters.createdDateEnd ? new Date(filters.createdDateEnd) : undefined}
+                                  captionLayout="dropdown"
+                                  disabled={(date) => filters.createdDate ? date < new Date(filters.createdDate) : false}
+                                  onSelect={(date) => {
+                                    setFilters(prev => ({
+                                      ...prev,
+                                      createdDateEnd: date ? date.toISOString().split('T')[0] : '',
+                                      createdDateOp: date ? 'range' : '>='
+                                    }));
+                                    setCreatedEndOpen(false);
+                                  }}
+                                />
+                              </PopoverContent>
+                            </Popover>
                           </div>
                         </div>
                         {filters.createdDate && (
@@ -636,43 +691,69 @@ function App() {
                     {/* Modified Date */}
                     <div className="space-y-3">
                       <Label className="flex items-center gap-2 text-base">
-                        <Calendar className="h-5 w-5" />
+                        <CalendarIcon className="h-5 w-5" />
                         Modified Date
                       </Label>
                       <div className="border-2 rounded-lg p-4 bg-card">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="space-y-2">
                             <label className="text-sm font-medium text-muted-foreground">From</label>
-                            <Input
-                              type="date"
-                              value={filters.modifiedDate}
-                              onChange={(e) => {
-                                setFilters(prev => ({
-                                  ...prev,
-                                  modifiedDate: e.target.value,
-                                  modifiedDateOp: prev.modifiedDateEnd ? 'range' : '>='
-                                }));
-                              }}
-                              className="h-12 text-base"
-                              placeholder="Start date"
-                            />
+                            <Popover open={modifiedStartOpen} onOpenChange={setModifiedStartOpen}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  className="w-full h-12 justify-between font-normal text-base"
+                                >
+                                  {filters.modifiedDate ? new Date(filters.modifiedDate).toLocaleDateString() : "Select date"}
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={filters.modifiedDate ? new Date(filters.modifiedDate) : undefined}
+                                  captionLayout="dropdown"
+                                  onSelect={(date) => {
+                                    setFilters(prev => ({
+                                      ...prev,
+                                      modifiedDate: date ? date.toISOString().split('T')[0] : '',
+                                      modifiedDateOp: prev.modifiedDateEnd ? 'range' : '>='
+                                    }));
+                                    setModifiedStartOpen(false);
+                                  }}
+                                />
+                              </PopoverContent>
+                            </Popover>
                           </div>
                           <div className="space-y-2">
                             <label className="text-sm font-medium text-muted-foreground">To (Optional)</label>
-                            <Input
-                              type="date"
-                              value={filters.modifiedDateEnd}
-                              onChange={(e) => {
-                                setFilters(prev => ({
-                                  ...prev,
-                                  modifiedDateEnd: e.target.value,
-                                  modifiedDateOp: e.target.value ? 'range' : '>='
-                                }));
-                              }}
-                              className="h-12 text-base"
-                              placeholder="End date"
-                              min={filters.modifiedDate}
-                            />
+                            <Popover open={modifiedEndOpen} onOpenChange={setModifiedEndOpen}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  className="w-full h-12 justify-between font-normal text-base"
+                                >
+                                  {filters.modifiedDateEnd ? new Date(filters.modifiedDateEnd).toLocaleDateString() : "Select date"}
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={filters.modifiedDateEnd ? new Date(filters.modifiedDateEnd) : undefined}
+                                  captionLayout="dropdown"
+                                  disabled={(date) => filters.modifiedDate ? date < new Date(filters.modifiedDate) : false}
+                                  onSelect={(date) => {
+                                    setFilters(prev => ({
+                                      ...prev,
+                                      modifiedDateEnd: date ? date.toISOString().split('T')[0] : '',
+                                      modifiedDateOp: date ? 'range' : '>='
+                                    }));
+                                    setModifiedEndOpen(false);
+                                  }}
+                                />
+                              </PopoverContent>
+                            </Popover>
                           </div>
                         </div>
                         {filters.modifiedDate && (
@@ -801,29 +882,6 @@ function App() {
                     </div>
                   </div>
 
-                  {/* Boolean Operator */}
-                  <div className="space-y-2">
-                    <Label>Boolean Operator (for multiple search terms)</Label>
-                    <div className="flex gap-2">
-                      <Button
-                        type="button"
-                        variant={filters.booleanOp === 'AND' ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setFilters(prev => ({ ...prev, booleanOp: 'AND' }))}
-                      >
-                        AND (all terms)
-                      </Button>
-                      <Button
-                        type="button"
-                        variant={filters.booleanOp === 'OR' ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setFilters(prev => ({ ...prev, booleanOp: 'OR' }))}
-                      >
-                        OR (any term)
-                      </Button>
-                    </div>
-                  </div>
-
                   {/* Apply Filters Button */}
                   <div className="flex gap-2 pt-2">
                     <Button
@@ -845,12 +903,12 @@ function App() {
               <CardContent className="pt-4">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-muted-foreground">Active Filters:</span>
-                  {filters.fileTypes.map(type => (
-                    <div key={type} className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
+                  {selectedFileTypes.map(fileType => (
+                    <div key={fileType.value} className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
                       <FileText className="h-3 w-3" />
-                      {type.toUpperCase()}
+                      {fileType.label}
                       <button
-                        onClick={() => toggleFileType(type)}
+                        onClick={() => setSelectedFileTypes(prev => prev.filter(ft => ft.value !== fileType.value))}
                         className="ml-1 hover:bg-primary/80 rounded-full p-0.5"
                       >
                         <X className="h-3 w-3" />
@@ -859,7 +917,7 @@ function App() {
                   ))}
                   {filters.createdDate && (
                     <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
-                      <Calendar className="h-3 w-3" />
+                      <CalendarIcon className="h-3 w-3" />
                       Created: {filters.createdDateOp === 'range' ? `${filters.createdDate} to ${filters.createdDateEnd}` : `${filters.createdDateOp}${filters.createdDate}`}
                       <button
                         onClick={() => setFilters(prev => ({ ...prev, createdDate: '', createdDateEnd: '' }))}
@@ -871,7 +929,7 @@ function App() {
                   )}
                   {filters.modifiedDate && (
                     <div className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded-md text-sm">
-                      <Calendar className="h-3 w-3" />
+                      <CalendarIcon className="h-3 w-3" />
                       Modified: {filters.modifiedDateOp === 'range' ? `${filters.modifiedDate} to ${filters.modifiedDateEnd}` : `${filters.modifiedDateOp}${filters.modifiedDate}`}
                       <button
                         onClick={() => setFilters(prev => ({ ...prev, modifiedDate: '', modifiedDateEnd: '' }))}
