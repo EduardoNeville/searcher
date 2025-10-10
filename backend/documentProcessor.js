@@ -374,70 +374,72 @@ class DocumentProcessor {
             return;
           }
 
-        let slideTexts = [];
-        let entriesProcessed = 0;
-        let totalEntries = 0;
+          let slideTexts = [];
+          let pendingReads = 0;
+          let allEntriesRead = false;
 
-        zipfile.on('entry', (entry) => {
-          totalEntries++;
-
-          if (entry.fileName.startsWith('ppt/slides/slide') && entry.fileName.endsWith('.xml')) {
-            zipfile.openReadStream(entry, (err, readStream) => {
-              if (err) {
-                entriesProcessed++;
-                if (entriesProcessed === totalEntries) {
-                  resolve(slideTexts.join('\n\n'));
-                }
-                return;
-              }
-
-              let xmlData = '';
-              readStream.on('data', (chunk) => {
-                xmlData += chunk;
-              });
-
-              readStream.on('end', () => {
-                xml2js.parseString(xmlData, (err, result) => {
-                  if (!err && result) {
-                    const text = this.extractTextFromXml(result);
-                    if (text) {
-                      slideTexts.push(text); // No trimming - keep raw text
-                    }
-                  }
-                  entriesProcessed++;
-                  if (entriesProcessed === totalEntries) {
-                    resolve(slideTexts.join('\n\n'));
-                  }
-                });
-              });
-
-              readStream.on('error', () => {
-                entriesProcessed++;
-                if (entriesProcessed === totalEntries) {
-                  resolve(slideTexts.join('\n\n'));
-                }
-              });
-            });
-          } else {
-            entriesProcessed++;
-            if (entriesProcessed === totalEntries) {
+          const checkComplete = () => {
+            if (allEntriesRead && pendingReads === 0) {
               resolve(slideTexts.join('\n\n'));
             }
-          }
-        });
+          };
 
-        zipfile.on('end', () => {
-          if (totalEntries === 0) {
-            resolve('');
-          }
-        });
+          zipfile.on('entry', (entry) => {
+            if (entry.fileName.startsWith('ppt/slides/slide') && entry.fileName.endsWith('.xml')) {
+              pendingReads++;
 
-        zipfile.on('error', (err) => {
-          reject(err);
-        });
+              zipfile.openReadStream(entry, (err, readStream) => {
+                if (err) {
+                  pendingReads--;
+                  zipfile.readEntry();
+                  checkComplete();
+                  return;
+                }
 
-        zipfile.readEntry();
-      });
+                let xmlData = '';
+                readStream.on('data', (chunk) => {
+                  xmlData += chunk.toString('utf8');
+                });
+
+                readStream.on('end', () => {
+                  xml2js.parseString(xmlData, (err, result) => {
+                    if (!err && result) {
+                      const text = this.extractTextFromXml(result);
+                      if (text && text.trim().length > 0) {
+                        slideTexts.push(text.trim());
+                      }
+                    }
+                    pendingReads--;
+                    zipfile.readEntry();
+                    checkComplete();
+                  });
+                });
+
+                readStream.on('error', (err) => {
+                  console.warn(`  ⚠️  Error reading slide XML: ${err.message}`);
+                  pendingReads--;
+                  zipfile.readEntry();
+                  checkComplete();
+                });
+              });
+            } else {
+              // Not a slide, continue to next entry
+              zipfile.readEntry();
+            }
+          });
+
+          zipfile.on('end', () => {
+            allEntriesRead = true;
+            checkComplete();
+          });
+
+          zipfile.on('error', (err) => {
+            reject(err);
+          });
+
+          // Start reading entries
+          zipfile.readEntry();
+        });
       } catch (error) {
         reject(error);
       }
@@ -632,18 +634,31 @@ class DocumentProcessor {
 
       if (Array.isArray(obj)) {
         for (const item of obj) {
-          text += this.extractTextFromXml(item) + ' ';
+          const extracted = this.extractTextFromXml(item);
+          if (extracted) {
+            text += extracted + ' ';
+          }
         }
         return text;
       }
 
       if (typeof obj === 'object' && obj !== null) {
+        // Check for direct text content in '_' key (common in XML parsing)
+        if (obj.hasOwnProperty('_')) {
+          return String(obj['_']);
+        }
+
+        // Recursively extract from all properties except attributes
         for (const key in obj) {
           if (obj.hasOwnProperty(key)) {
-            if (key === '_' || key === '$') {
-              continue; // Skip XML attributes
+            // Skip XML attributes (usually in '$' key)
+            if (key === '$') {
+              continue;
             }
-            text += this.extractTextFromXml(obj[key]) + ' ';
+            const extracted = this.extractTextFromXml(obj[key]);
+            if (extracted) {
+              text += extracted + ' ';
+            }
           }
         }
       }
