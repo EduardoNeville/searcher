@@ -93,6 +93,9 @@ class FileWatchdog {
         } catch (error) {
           console.log('⚠️  Could not get document count:', error.message);
         }
+
+        // Check for completeness - verify all files are indexed
+        await this.checkIndexCompleteness();
       } else {
         console.log('🆕 Index does not exist, performing initial indexing...');
         // Run the indexer for first-time setup
@@ -366,6 +369,137 @@ class FileWatchdog {
     }
 
     return true;
+  }
+
+  async checkIndexCompleteness() {
+    console.log('🔍 Checking index completeness...');
+
+    try {
+      // Build a set of all files on disk
+      const filesOnDisk = new Set();
+      let diskFileCount = 0;
+
+      const walkDirectory = async (dirPath) => {
+        try {
+          const items = fs.readdirSync(dirPath);
+
+          for (const item of items) {
+            if (item.startsWith('.')) continue;
+
+            const fullPath = path.join(dirPath, item);
+
+            try {
+              const stats = fs.statSync(fullPath);
+
+              if (stats.isDirectory()) {
+                if (this.skipDirs.includes(item)) continue;
+                await walkDirectory(fullPath);
+              } else if (stats.isFile() && this.shouldIndexFile(fullPath)) {
+                const relativePath = path.relative(this.baseDir, fullPath);
+                filesOnDisk.add(relativePath);
+                diskFileCount++;
+              }
+            } catch (err) {
+              continue;
+            }
+          }
+        } catch (err) {
+          return;
+        }
+      };
+
+      await walkDirectory(this.baseDir);
+      console.log(`   Found ${diskFileCount} indexable files on disk`);
+
+      // Get all unique paths from the index (excluding chunks)
+      const indexedPaths = new Set();
+      let scrollId = null;
+      let totalHits = 0;
+
+      // Use scroll API to get all documents
+      let response = await this.client.search({
+        index: this.indexName,
+        scroll: '1m',
+        size: 1000,
+        body: {
+          query: {
+            match_all: {}
+          },
+          _source: ['path']
+        }
+      });
+
+      scrollId = response.body?.scroll_id || response._scroll_id;
+      let hits = response.body?.hits?.hits || response.hits?.hits || [];
+      totalHits = response.body?.hits?.total?.value || response.hits?.total?.value || 0;
+
+      // Process first batch
+      for (const hit of hits) {
+        const docPath = hit._source.path;
+        indexedPaths.add(docPath);
+      }
+
+      // Continue scrolling to get all documents
+      while (hits.length > 0) {
+        response = await this.client.scroll({
+          scroll_id: scrollId,
+          scroll: '1m'
+        });
+
+        hits = response.body?.hits?.hits || response.hits?.hits || [];
+        for (const hit of hits) {
+          const docPath = hit._source.path;
+          indexedPaths.add(docPath);
+        }
+      }
+
+      // Clear scroll
+      if (scrollId) {
+        await this.client.clearScroll({ scroll_id: scrollId });
+      }
+
+      console.log(`   Found ${indexedPaths.size} unique files in index (${totalHits} total documents including chunks)`);
+
+      // Find missing files (on disk but not in index)
+      const missingFiles = [];
+      for (const diskPath of filesOnDisk) {
+        if (!indexedPaths.has(diskPath)) {
+          missingFiles.push(diskPath);
+        }
+      }
+
+      if (missingFiles.length > 0) {
+        console.log(`   ⚠️  Missing ${missingFiles.length} files from index:`);
+        // Show first 10 missing files
+        const toShow = missingFiles.slice(0, 10);
+        toShow.forEach(file => console.log(`      - ${file}`));
+        if (missingFiles.length > 10) {
+          console.log(`      ... and ${missingFiles.length - 10} more`);
+        }
+
+        // Index missing files immediately
+        console.log(`   📄 Indexing missing files...`);
+        for (const relativePath of missingFiles) {
+          const fullPath = path.join(this.baseDir, relativePath);
+          await this.indexSingleFile(fullPath);
+        }
+
+        // Refresh index
+        await this.client.indices.refresh({ index: this.indexName });
+        console.log(`   ✅ Indexed ${missingFiles.length} missing files`);
+      } else {
+        console.log(`   ✅ All files are indexed`);
+      }
+
+      return {
+        total: diskFileCount,
+        indexed: indexedPaths.size,
+        missing: missingFiles.length
+      };
+    } catch (error) {
+      console.error('   ❌ Error checking completeness:', error.message);
+      return { total: 0, indexed: 0, missing: 0 };
+    }
   }
 
 
