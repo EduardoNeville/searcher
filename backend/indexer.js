@@ -37,8 +37,8 @@ async function createIndex() {
     const indexExists = await client.indices.exists({ index: INDEX_NAME });
 
     if (indexExists) {
-      console.log('Index already exists, deleting...');
-      await client.indices.delete({ index: INDEX_NAME });
+      console.log('Index already exists');
+      return { existed: true };
     }
 
     await client.indices.create({
@@ -77,8 +77,100 @@ async function createIndex() {
     });
 
     console.log('Index created successfully');
+    return { existed: false };
   } catch (error) {
     console.error('Error creating index:', error);
+    throw error;
+  }
+}
+
+async function cleanupRemovedFolders(currentFolders) {
+  try {
+    console.log('\n🧹 Checking for documents from removed folders...');
+
+    // Get all unique paths from the index
+    const searchResponse = await client.search({
+      index: INDEX_NAME,
+      body: {
+        size: 0,
+        aggs: {
+          unique_paths: {
+            terms: {
+              field: 'path',
+              size: 10000
+            }
+          }
+        }
+      }
+    });
+
+    const indexedPaths = searchResponse.body?.aggregations?.unique_paths?.buckets ||
+                        searchResponse.aggregations?.unique_paths?.buckets || [];
+
+    if (indexedPaths.length === 0) {
+      console.log('   No existing documents found in index');
+      return 0;
+    }
+
+    // Build a set of configured folder paths for quick lookup
+    const configuredFolders = new Set(currentFolders.map(f => f.path));
+
+    // Find paths that don't belong to any configured folder
+    const pathsToDelete = [];
+    for (const bucket of indexedPaths) {
+      const docPath = bucket.key;
+
+      // Check if this path belongs to any configured folder
+      const belongsToConfiguredFolder = Array.from(configuredFolders).some(folderPath => {
+        // The document path should be the folder path or inside it
+        return docPath === folderPath || docPath.startsWith(folderPath + '/');
+      });
+
+      if (!belongsToConfiguredFolder) {
+        pathsToDelete.push(docPath);
+      }
+    }
+
+    if (pathsToDelete.length === 0) {
+      console.log('   ✓ No orphaned documents found');
+      return 0;
+    }
+
+    console.log(`   Found ${pathsToDelete.length} document(s) from removed folders`);
+
+    // Delete documents by path (this will also delete all chunks of each document)
+    let deletedCount = 0;
+    for (const pathToDelete of pathsToDelete) {
+      try {
+        // Delete by query - this will match the document and all its chunks
+        const deleteResponse = await client.deleteByQuery({
+          index: INDEX_NAME,
+          body: {
+            query: {
+              term: {
+                path: pathToDelete
+              }
+            }
+          },
+          refresh: true
+        });
+
+        const deleted = deleteResponse.body?.deleted || deleteResponse.deleted || 0;
+        deletedCount += deleted;
+
+        if (deleted > 0) {
+          console.log(`   🗑️  Deleted ${deleted} document(s) for: ${pathToDelete}`);
+        }
+      } catch (error) {
+        console.error(`   ⚠️  Failed to delete documents for ${pathToDelete}:`, error.message);
+      }
+    }
+
+    console.log(`   ✓ Cleanup complete: ${deletedCount} document(s) removed\n`);
+    return deletedCount;
+  } catch (error) {
+    console.error('Error during cleanup:', error);
+    return 0;
   }
 }
 
@@ -453,21 +545,57 @@ function loadIndexedFolders() {
   return [{ path: '/home/user', name: 'Home', addedAt: new Date().toISOString() }];
 }
 
+async function deleteDocumentsForFolder(folderPath) {
+  try {
+    console.log(`\n🗑️  Deleting all documents from folder: ${folderPath}`);
+
+    // Delete all documents where path starts with the folder path
+    const deleteResponse = await client.deleteByQuery({
+      index: INDEX_NAME,
+      body: {
+        query: {
+          bool: {
+            should: [
+              { term: { path: folderPath } },
+              { prefix: { path: folderPath + '/' } }
+            ],
+            minimum_should_match: 1
+          }
+        }
+      },
+      refresh: true
+    });
+
+    const deleted = deleteResponse.body?.deleted || deleteResponse.deleted || 0;
+    console.log(`   ✓ Deleted ${deleted} document(s) from ${folderPath}\n`);
+    return deleted;
+  } catch (error) {
+    console.error(`   ⚠️  Failed to delete documents for ${folderPath}:`, error.message);
+    return 0;
+  }
+}
+
 async function main() {
   try {
-    console.log('Creating Elasticsearch index...');
-    await createIndex();
-
-    console.log('Starting file indexing...');
-    const startTime = Date.now();
-
-    // Load indexed folders
+    // Load indexed folders first
     const folders = loadIndexedFolders();
-    console.log(`\n📁 Indexing ${folders.length} folder(s):`);
+    console.log(`\n📁 Configured folders (${folders.length}):`);
     folders.forEach(folder => console.log(`   - ${folder.name}: ${folder.path}`));
+
+    console.log('\nCreating/checking Elasticsearch index...');
+    const indexInfo = await createIndex();
+
+    if (indexInfo.existed) {
+      // Index already exists - clean up documents from removed folders
+      await cleanupRemovedFolders(folders);
+    }
+
+    console.log('\nStarting file indexing...');
+    const startTime = Date.now();
 
     let totalIndexed = 0;
     let totalSkipped = 0;
+    let totalDeleted = 0;
     const allPlaceholderFiles = [];
 
     // Index each folder
@@ -482,6 +610,11 @@ async function main() {
 
       console.log(`\n\n📂 Indexing: ${folder.name} (${baseDir})`);
       console.log(`   Maps to ${containerToHostPath(baseDir)} on host\n`);
+
+      // Delete all existing documents for this folder before re-indexing
+      // This ensures we don't have stale documents from deleted files
+      const deleted = await deleteDocumentsForFolder(baseDir);
+      totalDeleted += deleted;
 
       const placeholderFiles = [];
       const result = await walkDirectory(baseDir, baseDir, placeholderFiles);
@@ -498,6 +631,7 @@ async function main() {
 
     console.log(`\n\n═══════════════════════════════════════════════════════`);
     console.log(`Initial indexing completed in ${duration.toFixed(2)} seconds`);
+    console.log(`Documents deleted (stale): ${totalDeleted}`);
     console.log(`Files indexed: ${totalIndexed}`);
     console.log(`Files skipped: ${totalSkipped}`);
     console.log(`Placeholder files detected: ${allPlaceholderFiles.length}`);
