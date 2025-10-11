@@ -5,12 +5,12 @@ const mammoth = require('mammoth');
 const yauzl = require('yauzl');
 const xml2js = require('xml2js');
 
-// Try to import nodejs-pptx, fall back to basic extraction if not available
-let nodejsPptx;
+// Try to import pptx parsers, fall back to manual extraction if not available
+let pptxParser;
 try {
-  nodejsPptx = require('nodejs-pptx');
+  pptxParser = require('node-pptx-parser');
 } catch (error) {
-  console.warn('nodejs-pptx not available, using basic PowerPoint extraction');
+  console.warn('node-pptx-parser not available, using manual PowerPoint extraction');
 }
 
 class DocumentProcessor {
@@ -239,11 +239,20 @@ class DocumentProcessor {
         return originalStderrWrite.apply(process.stderr, arguments);
       };
 
-      const data = await pdfParse(buffer, {
-        // PDF parsing options for better text extraction
-        max: 0, // Parse all pages
-        version: 'v1.10.100' // Use specific version for consistency
-      });
+      // Wrap pdf-parse in a Promise with timeout and comprehensive error handling
+      const data = await Promise.race([
+        pdfParse(buffer, {
+          // PDF parsing options for better text extraction
+          max: 0, // Parse all pages
+          version: 'v1.10.100' // Use specific version for consistency
+        }).catch(err => {
+          // Catch any errors from pdf-parse including async ones
+          throw err;
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('PDF parsing timeout')), 30000)
+        )
+      ]);
 
       // Restore stderr
       process.stderr.write = originalStderrWrite;
@@ -279,21 +288,27 @@ class DocumentProcessor {
                              errorMsg.includes('stream.') ||
                              errorMsg.includes('DecodeStream') ||
                              errorMsg.includes('StreamsSequenceStream') ||
+                             errorMsg.includes('timeout') ||
                              errorStack.includes('pdf.worker.js') ||
                              errorStack.includes('Lexer') ||
                              errorStack.includes('EvaluatorPreprocessor');
 
       if (isInternalError) {
-        console.warn(`  ⚠️  PDF has internal structure issues, skipping extraction`);
+        console.warn(`  ⚠️  PDF has internal structure issues or timed out, skipping extraction`);
         return ''; // Return empty content for corrupted/incompatible PDFs
       }
 
       console.warn(`  ⚠️  PDF extraction error: ${error.message}`);
 
-      // Try alternative extraction method for other errors
+      // Try alternative extraction method for other errors - with shorter page limit
       try {
-        console.log(`  🔄 Attempting fallback extraction (first 10 pages only)...`);
-        const simpleData = await pdfParse(buffer, { max: 10 }); // Only first 10 pages
+        console.log(`  🔄 Attempting fallback extraction (first 5 pages only)...`);
+        const simpleData = await Promise.race([
+          pdfParse(buffer, { max: 5 }).catch(err => { throw err; }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Fallback PDF parsing timeout')), 10000)
+          )
+        ]);
         console.log(`  ✓ Fallback extraction succeeded`);
         return simpleData.text || '';
       } catch (fallbackError) {
@@ -301,10 +316,11 @@ class DocumentProcessor {
         const fallbackStack = fallbackError.stack || '';
 
         const isFallbackInternalError = fallbackMsg.includes('is not a function') ||
+                                       fallbackMsg.includes('timeout') ||
                                        fallbackStack.includes('pdf.worker.js');
 
         if (isFallbackInternalError) {
-          console.warn(`  ⚠️  PDF incompatible with pdf-parse library, skipping`);
+          console.warn(`  ⚠️  PDF incompatible with pdf-parse library or timed out, skipping`);
         } else {
           console.warn(`  ⚠️  Fallback extraction also failed: ${fallbackError.message}`);
         }
@@ -337,12 +353,12 @@ class DocumentProcessor {
 
   async extractPptxText(buffer) {
     try {
-      // Try using nodejs-pptx first for better extraction
-      if (nodejsPptx) {
+      // Try using node-pptx-parser first for better extraction
+      if (pptxParser) {
         try {
-          return await this.extractPptxWithNodejsPptx(buffer);
+          return await this.extractPptxWithParser(buffer);
         } catch (error) {
-          console.warn(`  ⚠️  nodejs-pptx extraction failed, falling back to manual method: ${error.message}`);
+          console.warn(`  ⚠️  node-pptx-parser extraction failed, falling back to manual method: ${error.message}`);
         }
       }
 
@@ -354,14 +370,14 @@ class DocumentProcessor {
     }
   }
 
-  async extractPptxWithNodejsPptx(buffer) {
+  async extractPptxWithParser(buffer) {
     try {
-      // Write buffer to temporary file for nodejs-pptx processing
+      // Write buffer to temporary file for node-pptx-parser processing
       const tempFile = `/tmp/temp_${Date.now()}.pptx`;
       fs.writeFileSync(tempFile, buffer);
 
-      // Extract text using nodejs-pptx
-      const text = await nodejsPptx.parsePPTX(tempFile);
+      // Extract text using node-pptx-parser
+      const text = await pptxParser.extractText(tempFile);
 
       // Clean up temp file
       try {

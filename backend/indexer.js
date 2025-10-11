@@ -4,6 +4,17 @@ const { Client } = require('@elastic/elasticsearch');
 const mime = require('mime-types');
 const DocumentProcessor = require('./documentProcessor');
 
+// Add global error handlers to prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Promise Rejection:', reason);
+  // Don't exit, just log the error
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  // Don't exit, just log the error
+});
+
 const client = new Client({
   node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
 });
