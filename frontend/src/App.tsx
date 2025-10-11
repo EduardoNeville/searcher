@@ -325,8 +325,12 @@ function App() {
     e.preventDefault();
     if (!query.trim()) return;
 
-    setLoading(true);
     setError(null);
+
+    // Set up a timer to show loading state only after 1 second
+    const loadingTimer = setTimeout(() => {
+      setLoading(true);
+    }, 1000);
 
     try {
       const response = await fetch(`${API_URL}/search?q=${encodeURIComponent(query)}&size=50`);
@@ -347,6 +351,8 @@ function App() {
       setResults([]);
       setTotal(0);
     } finally {
+      // Clear the timer and reset loading state
+      clearTimeout(loadingTimer);
       setLoading(false);
     }
   };
@@ -527,8 +533,12 @@ function App() {
     // Trigger search immediately with the new query
     if (!filterQuery.trim()) return;
 
-    setLoading(true);
     setError(null);
+
+    // Set up a timer to show loading state only after 1 second
+    const loadingTimer = setTimeout(() => {
+      setLoading(true);
+    }, 1000);
 
     try {
       const response = await fetch(`${API_URL}/search?q=${encodeURIComponent(filterQuery)}&size=50`);
@@ -549,6 +559,8 @@ function App() {
       setResults([]);
       setTotal(0);
     } finally {
+      // Clear the timer and reset loading state
+      clearTimeout(loadingTimer);
       setLoading(false);
     }
   };
