@@ -1,21 +1,26 @@
-FROM node:22-alpine
+FROM node:20
 
-# Install system dependencies for document processing
-RUN apk add --no-cache \
+# Install system dependencies for document processing and better-sqlite3
+RUN apt-get update && apt-get install -y \
     python3 \
-    py3-pip \
-    build-base \
-    cairo-dev \
-    pango-dev \
-    libjpeg-turbo-dev \
-    giflib-dev \
-    librsvg-dev \
-    pixman-dev
+    python3-pip \
+    build-essential \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libjpeg-dev \
+    libgif-dev \
+    librsvg2-dev \
+    libpixman-1-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+
+# Install dependencies and rebuild native modules for Alpine
+RUN npm install && \
+    npm rebuild better-sqlite3
 
 COPY . .
 
