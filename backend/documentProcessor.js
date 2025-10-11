@@ -5,12 +5,12 @@ const mammoth = require('mammoth');
 const yauzl = require('yauzl');
 const xml2js = require('xml2js');
 
-// Try to import node-pptx, fall back to basic extraction if not available
-let PPTX;
+// Try to import nodejs-pptx, fall back to basic extraction if not available
+let nodejsPptx;
 try {
-  PPTX = require('node-pptx');
+  nodejsPptx = require('nodejs-pptx');
 } catch (error) {
-  console.warn('node-pptx not available, using basic PowerPoint extraction');
+  console.warn('nodejs-pptx not available, using basic PowerPoint extraction');
 }
 
 class DocumentProcessor {
@@ -337,12 +337,12 @@ class DocumentProcessor {
 
   async extractPptxText(buffer) {
     try {
-      // Try using node-pptx first for better extraction
-      if (PPTX) {
+      // Try using nodejs-pptx first for better extraction
+      if (nodejsPptx) {
         try {
-          return await this.extractPptxWithNodePptx(buffer);
+          return await this.extractPptxWithNodejsPptx(buffer);
         } catch (error) {
-          console.warn(`  ⚠️  node-pptx extraction failed, falling back to manual method: ${error.message}`);
+          console.warn(`  ⚠️  nodejs-pptx extraction failed, falling back to manual method: ${error.message}`);
         }
       }
 
@@ -354,36 +354,26 @@ class DocumentProcessor {
     }
   }
 
-  async extractPptxWithNodePptx(buffer) {
-    return new Promise((resolve, reject) => {
+  async extractPptxWithNodejsPptx(buffer) {
+    try {
+      // Write buffer to temporary file for nodejs-pptx processing
+      const tempFile = `/tmp/temp_${Date.now()}.pptx`;
+      fs.writeFileSync(tempFile, buffer);
+
+      // Extract text using nodejs-pptx
+      const text = await nodejsPptx.parsePPTX(tempFile);
+
+      // Clean up temp file
       try {
-        // Write buffer to temporary file for node-pptx processing
-        const tempFile = `/tmp/temp_${Date.now()}.pptx`;
-        fs.writeFileSync(tempFile, buffer);
-
-        const presentation = new PPTX(tempFile);
-        const slides = presentation.getSlides();
-        let allText = [];
-
-        for (const slide of slides) {
-          const slideText = slide.getText();
-          if (slideText) {
-            allText.push(slideText); // No trimming - keep raw text
-          }
-        }
-
-        // Clean up temp file
-        try {
-          fs.unlinkSync(tempFile);
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-
-        resolve(allText.join('\n\n'));
-      } catch (error) {
-        reject(error);
+        fs.unlinkSync(tempFile);
+      } catch (e) {
+        // Ignore cleanup errors
       }
-    });
+
+      return text || '';
+    } catch (error) {
+      throw error;
+    }
   }
 
   async extractPptxManual(buffer) {

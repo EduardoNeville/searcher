@@ -438,6 +438,21 @@ async function retryPlaceholders(placeholderFiles, maxRetries = 2, delaySeconds 
   return { indexed, failed };
 }
 
+// Helper to load indexed folders
+function loadIndexedFolders() {
+  const FOLDERS_CONFIG_FILE = path.join(process.env.DB_DIR || '/app/data', 'indexed_folders.json');
+  try {
+    if (fs.existsSync(FOLDERS_CONFIG_FILE)) {
+      const data = fs.readFileSync(FOLDERS_CONFIG_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Error loading indexed folders:', error);
+  }
+  // Return default folder
+  return [{ path: '/home/user', name: 'Home', addedAt: new Date().toISOString() }];
+}
+
 async function main() {
   try {
     console.log('Creating Elasticsearch index...');
@@ -446,31 +461,57 @@ async function main() {
     console.log('Starting file indexing...');
     const startTime = Date.now();
 
-    // Index files from the mounted directory
-    // Always use /home/user in the container (this is where MOUNT_DIR is mounted)
-    const baseDir = '/home/user';
-    console.log(`Indexing directory: ${baseDir} (maps to ${HOST_BASE} on host)`);
+    // Load indexed folders
+    const folders = loadIndexedFolders();
+    console.log(`\n📁 Indexing ${folders.length} folder(s):`);
+    folders.forEach(folder => console.log(`   - ${folder.name}: ${folder.path}`));
 
-    const placeholderFiles = [];
-    const result = await walkDirectory(baseDir, baseDir, placeholderFiles);
+    let totalIndexed = 0;
+    let totalSkipped = 0;
+    const allPlaceholderFiles = [];
+
+    // Index each folder
+    for (const folder of folders) {
+      const baseDir = folder.path;
+
+      // Check if folder exists
+      if (!fs.existsSync(baseDir)) {
+        console.warn(`\n⚠️  Folder not found: ${baseDir} - skipping`);
+        continue;
+      }
+
+      console.log(`\n\n📂 Indexing: ${folder.name} (${baseDir})`);
+      console.log(`   Maps to ${containerToHostPath(baseDir)} on host\n`);
+
+      const placeholderFiles = [];
+      const result = await walkDirectory(baseDir, baseDir, placeholderFiles);
+
+      totalIndexed += result.indexed;
+      totalSkipped += result.skipped;
+      allPlaceholderFiles.push(...placeholderFiles);
+
+      console.log(`\n   ✓ Folder complete: ${result.indexed} indexed, ${result.skipped} skipped`);
+    }
 
     const endTime = Date.now();
     const duration = (endTime - startTime) / 1000;
 
-    console.log(`\nInitial indexing completed in ${duration.toFixed(2)} seconds`);
-    console.log(`Files indexed: ${result.indexed}`);
-    console.log(`Files skipped: ${result.skipped}`);
-    console.log(`Placeholder files detected: ${placeholderFiles.length}`);
+    console.log(`\n\n═══════════════════════════════════════════════════════`);
+    console.log(`Initial indexing completed in ${duration.toFixed(2)} seconds`);
+    console.log(`Files indexed: ${totalIndexed}`);
+    console.log(`Files skipped: ${totalSkipped}`);
+    console.log(`Placeholder files detected: ${allPlaceholderFiles.length}`);
+    console.log(`═══════════════════════════════════════════════════════`);
 
     // Retry placeholder files
-    if (placeholderFiles.length > 0) {
-      const retryResult = await retryPlaceholders(placeholderFiles, 2, 30);
+    if (allPlaceholderFiles.length > 0) {
+      const retryResult = await retryPlaceholders(allPlaceholderFiles, 2, 30);
       console.log(`\n📊 Retry Results:`);
       console.log(`  Successfully indexed: ${retryResult.indexed}`);
       console.log(`  Still failed/pending: ${retryResult.failed}`);
       console.log(`\n📈 Final totals:`);
-      console.log(`  Total indexed: ${result.indexed + retryResult.indexed}`);
-      console.log(`  Total skipped/failed: ${result.skipped - placeholderFiles.length + retryResult.failed}`);
+      console.log(`  Total indexed: ${totalIndexed + retryResult.indexed}`);
+      console.log(`  Total skipped/failed: ${totalSkipped - allPlaceholderFiles.length + retryResult.failed}`);
     }
 
     // Refresh the index

@@ -2,4 +2,5 @@ elasticsearch_data/
 node_modules/
 misc/
 
-*.log
+.auto-update.pid
+auto-update.log

@@ -387,6 +387,161 @@ app.get('/history/stats', async (req, res) => {
   }
 });
 
+// Indexed folders management
+const fs = require('fs');
+const pathModule = require('path');
+const FOLDERS_CONFIG_FILE = pathModule.join(process.env.DB_DIR || '/app/data', 'indexed_folders.json');
+
+// Helper to load indexed folders
+function loadIndexedFolders() {
+  try {
+    if (fs.existsSync(FOLDERS_CONFIG_FILE)) {
+      const data = fs.readFileSync(FOLDERS_CONFIG_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Error loading indexed folders:', error);
+  }
+  // Return default folder
+  return [{ path: CONTAINER_BASE, name: 'Home', addedAt: new Date().toISOString() }];
+}
+
+// Helper to save indexed folders
+function saveIndexedFolders(folders) {
+  try {
+    // Ensure data directory exists
+    const dataDir = pathModule.dirname(FOLDERS_CONFIG_FILE);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(FOLDERS_CONFIG_FILE, JSON.stringify(folders, null, 2));
+    return true;
+  } catch (error) {
+    console.error('Error saving indexed folders:', error);
+    return false;
+  }
+}
+
+// Get list of indexed folders
+app.get('/folders', async (req, res) => {
+  try {
+    const folders = loadIndexedFolders();
+    res.json({ folders });
+  } catch (error) {
+    console.error('Folders list error:', error);
+    res.status(500).json({ error: 'Failed to get folders', message: error.message });
+  }
+});
+
+// Add a new folder to index
+app.post('/folders', async (req, res) => {
+  try {
+    const { path, name } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'Folder path is required' });
+    }
+
+    // Map host path to container path if needed
+    let containerPath = path;
+    if (path.startsWith(HOST_BASE + '/')) {
+      containerPath = path.replace(HOST_BASE + '/', CONTAINER_BASE + '/');
+    }
+
+    // Check if folder exists
+    if (!fs.existsSync(containerPath)) {
+      return res.status(404).json({ error: 'Folder not found', path: containerPath });
+    }
+
+    // Check if it's actually a directory
+    const stats = fs.statSync(containerPath);
+    if (!stats.isDirectory()) {
+      return res.status(400).json({ error: 'Path is not a directory' });
+    }
+
+    // Load existing folders
+    const folders = loadIndexedFolders();
+
+    // Check if folder already indexed
+    if (folders.some(f => f.path === containerPath)) {
+      return res.status(409).json({ error: 'Folder already indexed' });
+    }
+
+    // Add new folder
+    folders.push({
+      path: containerPath,
+      name: name || pathModule.basename(containerPath),
+      addedAt: new Date().toISOString()
+    });
+
+    // Save folders
+    if (!saveIndexedFolders(folders)) {
+      return res.status(500).json({ error: 'Failed to save folder configuration' });
+    }
+
+    res.json({ success: true, folder: folders[folders.length - 1] });
+  } catch (error) {
+    console.error('Add folder error:', error);
+    res.status(500).json({ error: 'Failed to add folder', message: error.message });
+  }
+});
+
+// Remove a folder from indexing
+app.delete('/folders', async (req, res) => {
+  try {
+    const { path } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'Folder path is required' });
+    }
+
+    // Load existing folders
+    let folders = loadIndexedFolders();
+
+    // Find and remove folder
+    const initialLength = folders.length;
+    folders = folders.filter(f => f.path !== path);
+
+    if (folders.length === initialLength) {
+      return res.status(404).json({ error: 'Folder not found in index' });
+    }
+
+    // Ensure at least one folder remains
+    if (folders.length === 0) {
+      return res.status(400).json({ error: 'Cannot remove last indexed folder' });
+    }
+
+    // Save folders
+    if (!saveIndexedFolders(folders)) {
+      return res.status(500).json({ error: 'Failed to save folder configuration' });
+    }
+
+    res.json({ success: true, message: 'Folder removed from indexing' });
+  } catch (error) {
+    console.error('Remove folder error:', error);
+    res.status(500).json({ error: 'Failed to remove folder', message: error.message });
+  }
+});
+
+// Trigger re-indexing
+app.post('/reindex', async (req, res) => {
+  try {
+    const { execSync } = require('child_process');
+
+    // Run indexer in background
+    execSync('node /app/indexer.js > /app/logs/reindex.log 2>&1 &', {
+      cwd: '/app',
+      stdio: 'ignore',
+      detached: true
+    });
+
+    res.json({ success: true, message: 'Re-indexing started in background' });
+  } catch (error) {
+    console.error('Reindex error:', error);
+    res.status(500).json({ error: 'Failed to start re-indexing', message: error.message });
+  }
+});
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`Server running at http://0.0.0.0:${port}`);
 });

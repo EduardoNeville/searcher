@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, FileText, Clock, Folder, ExternalLink, File, Presentation, Sheet, BookOpen, History, X, Trash2, HelpCircle, User, Filter, Calendar as CalendarIcon, HardDrive, UserCircle, ChevronDown } from 'lucide-react';
+import { Search, FileText, Clock, Folder, ExternalLink, File, Presentation, Sheet, BookOpen, History, X, Trash2, HelpCircle, User, Filter, Calendar as CalendarIcon, HardDrive, UserCircle, ChevronDown, FolderPlus, RefreshCw, Settings } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
@@ -7,6 +7,7 @@ import { Label } from './components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
 import { Calendar } from './components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './components/ui/dialog';
 import MultipleSelector, { type Option } from './components/ui/multiselector';
 
 interface SearchResult {
@@ -58,6 +59,12 @@ interface Filters {
   booleanOp: string;
 }
 
+interface IndexedFolder {
+  path: string;
+  name: string;
+  addedAt: string;
+}
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 // File type options for MultiSelector
@@ -99,6 +106,11 @@ function App() {
   const [historySearch, setHistorySearch] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [showFoldersDialog, setShowFoldersDialog] = useState(false);
+  const [folders, setFolders] = useState<IndexedFolder[]>([]);
+  const [newFolderPath, setNewFolderPath] = useState('');
+  const [newFolderName, setNewFolderName] = useState('');
+  const [isReindexing, setIsReindexing] = useState(false);
   const [filters, setFilters] = useState<Filters>({
     fileTypes: [],
     createdDateOp: '>',
@@ -149,6 +161,132 @@ function App() {
     }
   }, []);
 
+  const fetchFolders = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/folders`);
+      if (response.ok) {
+        const data = await response.json();
+        setFolders(data.folders);
+      }
+    } catch (error) {
+      console.error('Failed to fetch folders:', error);
+    }
+  }, []);
+
+  const handleBrowseFolder = async () => {
+    try {
+      // Check if the File System Access API is supported
+      if ('showDirectoryPicker' in window) {
+        // @ts-ignore - TypeScript doesn't have types for this API yet
+        const directoryHandle = await window.showDirectoryPicker();
+
+        // Get the directory name
+        const dirName = directoryHandle.name;
+
+        // Try to construct a reasonable path
+        // Since browsers don't expose full paths for security, we'll use a common pattern
+        setNewFolderPath(`/home/user/${dirName}`);
+
+        if (!newFolderName) {
+          setNewFolderName(dirName);
+        }
+
+        alert(`Selected folder: ${dirName}\n\nThe path has been set to: /home/user/${dirName}\n\nPlease adjust the path if needed before adding.`);
+      } else {
+        alert('Folder picker is not supported in your browser. Please type the folder path manually.\n\nNote: This feature works in Chrome, Edge, and other Chromium-based browsers.');
+      }
+    } catch (error: any) {
+      // User cancelled or error occurred
+      if (error.name !== 'AbortError') {
+        console.error('Error picking folder:', error);
+        alert('Failed to pick folder. Please type the path manually.');
+      }
+    }
+  };
+
+  const addFolder = async () => {
+    if (!newFolderPath.trim()) {
+      alert('Please enter a folder path');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/folders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          path: newFolderPath,
+          name: newFolderName || undefined,
+        }),
+      });
+
+      if (response.ok) {
+        setNewFolderPath('');
+        setNewFolderName('');
+        fetchFolders();
+        alert('Folder added! Click "Re-index All" to index files from this folder.');
+      } else {
+        const error = await response.json();
+        alert(`Failed to add folder: ${error.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to add folder:', error);
+      alert('Failed to add folder');
+    }
+  };
+
+  const removeFolder = async (path: string) => {
+    if (!confirm('Are you sure you want to remove this folder from indexing?')) return;
+
+    try {
+      const response = await fetch(`${API_URL}/folders`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path }),
+      });
+
+      if (response.ok) {
+        fetchFolders();
+        alert('Folder removed! Click "Re-index All" to update the index.');
+      } else {
+        const error = await response.json();
+        alert(`Failed to remove folder: ${error.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to remove folder:', error);
+      alert('Failed to remove folder');
+    }
+  };
+
+  const reindexAll = async () => {
+    if (!confirm('This will re-index all folders. This may take some time. Continue?')) return;
+
+    setIsReindexing(true);
+    try {
+      const response = await fetch(`${API_URL}/reindex`, {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        alert('Re-indexing started in background. This may take a few minutes.');
+        // Refresh stats after a delay
+        setTimeout(fetchStats, 5000);
+      } else {
+        const error = await response.json();
+        alert(`Failed to start re-indexing: ${error.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to start re-indexing:', error);
+      alert('Failed to start re-indexing');
+    } finally {
+      setIsReindexing(false);
+    }
+  };
+
   const deleteHistoryItem = async (id: number) => {
     try {
       const response = await fetch(`${API_URL}/history/${id}`, {
@@ -180,7 +318,8 @@ function App() {
   useEffect(() => {
     fetchStats();
     fetchHistory();
-  }, [fetchStats, fetchHistory]);
+    fetchFolders();
+  }, [fetchStats, fetchHistory, fetchFolders]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -279,27 +418,47 @@ function App() {
     : history;
 
   const buildQueryFromFilters = () => {
-    const parts: string[] = [];
+    // Extract text-only parts (non-filter terms) from current query
+    const currentQuery = query.trim();
+    const textParts: string[] = [];
 
-    // Add text query if exists
-    if (query.trim()) {
-      parts.push(query.trim());
+    // Parse existing query to extract text-only parts (remove existing filter syntax)
+    if (currentQuery) {
+      const filterPatterns = [
+        /filetype:[^\s]+/gi,
+        /created:[^\s]+/gi,
+        /modified:[^\s]+/gi,
+        /creator:[^\s]+/gi,
+        /editor:[^\s]+/gi,
+        /size:[^\s]+/gi
+      ];
+
+      let cleanQuery = currentQuery;
+      filterPatterns.forEach(pattern => {
+        cleanQuery = cleanQuery.replace(pattern, '');
+      });
+
+      // Clean up extra spaces and add to parts
+      cleanQuery = cleanQuery.replace(/\s+/g, ' ').trim();
+      if (cleanQuery) {
+        textParts.push(cleanQuery);
+      }
     }
 
     // Add file type filter from MultiSelector
     if (selectedFileTypes.length > 0) {
       const fileTypeValues = selectedFileTypes.map(ft => ft.value).join(',');
-      parts.push(`filetype:${fileTypeValues}`);
+      textParts.push(`filetype:${fileTypeValues}`);
     }
 
     // Add created date filter
     if (filters.createdDate) {
       if (filters.createdDateEnd) {
         // Range: from date to date
-        parts.push(`created:${filters.createdDate}..${filters.createdDateEnd}`);
+        textParts.push(`created:${filters.createdDate}..${filters.createdDateEnd}`);
       } else {
         // Just from date (>= operator - on or after)
-        parts.push(`created:>=${filters.createdDate}`);
+        textParts.push(`created:>=${filters.createdDate}`);
       }
     }
 
@@ -307,38 +466,38 @@ function App() {
     if (filters.modifiedDate) {
       if (filters.modifiedDateEnd) {
         // Range: from date to date
-        parts.push(`modified:${filters.modifiedDate}..${filters.modifiedDateEnd}`);
+        textParts.push(`modified:${filters.modifiedDate}..${filters.modifiedDateEnd}`);
       } else {
         // Just from date (>= operator - on or after)
-        parts.push(`modified:>=${filters.modifiedDate}`);
+        textParts.push(`modified:>=${filters.modifiedDate}`);
       }
     }
 
     // Add creator filter
     if (filters.creator.trim()) {
-      parts.push(`creator:${filters.creator.trim()}`);
+      textParts.push(`creator:${filters.creator.trim()}`);
     }
 
     // Add editor filter
     if (filters.editor.trim()) {
-      parts.push(`editor:${filters.editor.trim()}`);
+      textParts.push(`editor:${filters.editor.trim()}`);
     }
 
     // Add size filter
     if (filters.sizeValue || filters.sizeValueEnd) {
       if (filters.sizeValue && filters.sizeValueEnd) {
         // Range: both min and max specified
-        parts.push(`size:${filters.sizeValue}${filters.sizeUnit}..${filters.sizeValueEnd}${filters.sizeUnit}`);
+        textParts.push(`size:${filters.sizeValue}${filters.sizeUnit}..${filters.sizeValueEnd}${filters.sizeUnit}`);
       } else if (filters.sizeValue) {
         // Only minimum specified (larger than)
-        parts.push(`size:>${filters.sizeValue}${filters.sizeUnit}`);
+        textParts.push(`size:>${filters.sizeValue}${filters.sizeUnit}`);
       } else if (filters.sizeValueEnd) {
         // Only maximum specified (smaller than)
-        parts.push(`size:<${filters.sizeValueEnd}${filters.sizeUnit}`);
+        textParts.push(`size:<${filters.sizeValueEnd}${filters.sizeUnit}`);
       }
     }
 
-    return parts.join(' ');
+    return textParts.join(' ');
   };
 
   const clearFilters = () => {
@@ -361,12 +520,37 @@ function App() {
     setSelectedFileTypes([]);
   };
 
-  const applyFilters = () => {
+  const applyFilters = async () => {
     const filterQuery = buildQueryFromFilters();
     setQuery(filterQuery);
-    // Trigger search with the new query
-    const searchEvent = new Event('submit') as any;
-    handleSearch(searchEvent);
+
+    // Trigger search immediately with the new query
+    if (!filterQuery.trim()) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_URL}/search?q=${encodeURIComponent(filterQuery)}&size=50`);
+
+      if (!response.ok) {
+        throw new Error('Search failed');
+      }
+
+      const data: SearchResponse = await response.json();
+      setResults(data.results);
+      setTotal(data.total);
+
+      // Refresh history after successful search
+      fetchHistory();
+    } catch (error) {
+      console.error('Search error:', error);
+      setError('Search failed. Please try again.');
+      setResults([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const hasActiveFilters = () => {
@@ -474,15 +658,139 @@ function App() {
           <div className="max-w-4xl mx-auto">
             <div className="text-center mb-8">
               <div className="flex items-center justify-between mb-4">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowHistory(!showHistory)}
-                  className="flex items-center gap-2"
-                >
-                  <History className="h-4 w-4" />
-                  History {history.length > 0 && `(${history.length})`}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="flex items-center gap-2"
+                  >
+                    <History className="h-4 w-4" />
+                    History {history.length > 0 && `(${history.length})`}
+                  </Button>
+                  <Dialog open={showFoldersDialog} onOpenChange={setShowFoldersDialog}>
+                    <DialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex items-center gap-2"
+                      >
+                        <Settings className="h-4 w-4" />
+                        Folders ({folders.length})
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                      <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                          <Folder className="h-5 w-5" />
+                          Manage Indexed Folders
+                        </DialogTitle>
+                        <DialogDescription>
+                          Add or remove folders to be indexed for searching. After making changes, click "Re-index All" to update the search index.
+                        </DialogDescription>
+                      </DialogHeader>
+
+                      <div className="space-y-6">
+                        {/* Current Folders */}
+                        <div className="space-y-3">
+                          <h3 className="font-semibold text-sm">Current Folders</h3>
+                          <div className="space-y-2">
+                            {folders.map((folder) => (
+                              <Card key={folder.path}>
+                                <CardContent className="pt-4">
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                      <div className="font-medium">{folder.name}</div>
+                                      <div className="text-sm text-muted-foreground mt-1">{folder.path}</div>
+                                      <div className="text-xs text-muted-foreground mt-1">
+                                        Added: {new Date(folder.addedAt).toLocaleDateString()}
+                                      </div>
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => removeFolder(folder.path)}
+                                      disabled={folders.length === 1}
+                                      title={folders.length === 1 ? "Cannot remove last folder" : "Remove folder"}
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Add New Folder */}
+                        <div className="space-y-3">
+                          <h3 className="font-semibold text-sm">Add New Folder</h3>
+                          <div className="space-y-3">
+                            <div className="space-y-2">
+                              <Label htmlFor="folderPath">Folder Path *</Label>
+                              <div className="flex gap-2">
+                                <Input
+                                  id="folderPath"
+                                  type="text"
+                                  placeholder="/path/to/folder"
+                                  value={newFolderPath}
+                                  onChange={(e) => setNewFolderPath(e.target.value)}
+                                  className="flex-1"
+                                />
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={handleBrowseFolder}
+                                  className="shrink-0"
+                                >
+                                  <Folder className="h-4 w-4 mr-2" />
+                                  Browse
+                                </Button>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                Enter or browse for the full path to the folder you want to index
+                              </p>
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="folderName">Display Name (Optional)</Label>
+                              <Input
+                                id="folderName"
+                                type="text"
+                                placeholder="My Documents"
+                                value={newFolderName}
+                                onChange={(e) => setNewFolderName(e.target.value)}
+                              />
+                            </div>
+                            <Button
+                              onClick={addFolder}
+                              className="w-full"
+                              disabled={!newFolderPath.trim()}
+                            >
+                              <FolderPlus className="h-4 w-4 mr-2" />
+                              Add Folder
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Re-index Button */}
+                        <div className="pt-4 border-t">
+                          <Button
+                            onClick={reindexAll}
+                            variant="default"
+                            className="w-full"
+                            disabled={isReindexing}
+                          >
+                            <RefreshCw className={`h-4 w-4 mr-2 ${isReindexing ? 'animate-spin' : ''}`} />
+                            {isReindexing ? 'Re-indexing...' : 'Re-index All Folders'}
+                          </Button>
+                          <p className="text-xs text-muted-foreground text-center mt-2">
+                            This will scan all folders and update the search index
+                          </p>
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
                 <h1 className="text-4xl font-bold flex items-center gap-2">
                   <Search className="h-8 w-8" />
                   File Search
