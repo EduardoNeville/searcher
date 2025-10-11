@@ -696,28 +696,25 @@ function App() {
                           <h3 className="font-semibold text-sm">Current Folders</h3>
                           <div className="space-y-2">
                             {folders.map((folder) => (
-                              <Card key={folder.path}>
-                                <CardContent className="pt-4">
-                                  <div className="flex items-start justify-between">
-                                    <div className="flex-1">
-                                      <div className="font-medium">{folder.name}</div>
-                                      <div className="text-sm text-muted-foreground mt-1">{folder.path}</div>
-                                      <div className="text-xs text-muted-foreground mt-1">
-                                        Added: {new Date(folder.addedAt).toLocaleDateString()}
-                                      </div>
-                                    </div>
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => removeFolder(folder.path)}
-                                      disabled={folders.length === 1}
-                                      title={folders.length === 1 ? "Cannot remove last folder" : "Remove folder"}
-                                    >
-                                      <X className="h-4 w-4" />
-                                    </Button>
+                              <div key={folder.path} className="flex items-center justify-between p-3 border rounded-lg bg-card hover:bg-accent/50 transition-colors">
+                                <div className="flex-1 min-w-0 mr-3">
+                                  <div className="font-medium text-sm truncate">{folder.name}</div>
+                                  <div className="text-xs text-muted-foreground truncate">{folder.path}</div>
+                                  <div className="text-xs text-muted-foreground mt-0.5">
+                                    Added: {new Date(folder.addedAt).toLocaleDateString()}
                                   </div>
-                                </CardContent>
-                              </Card>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => removeFolder(folder.path)}
+                                  disabled={folders.length === 1}
+                                  title={folders.length === 1 ? "Cannot remove last folder" : "Remove folder"}
+                                  className="shrink-0"
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </div>
                             ))}
                           </div>
                         </div>
