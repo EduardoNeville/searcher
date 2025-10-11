@@ -75,21 +75,30 @@ class FileWatchdog {
   }
 
   async coldStartIndexer() {
-    console.log('🧊 Starting cold indexing...');
+    console.log('🧊 Checking index status...');
 
     try {
-      // Delete existing index
-      try {
-        await this.client.indices.delete({ index: 'files' });
-        console.log('🗑️  Deleted existing index');
-      } catch (error) {
-        // Index might not exist, that's fine
+      // Check if index exists
+      const indexExists = await this.client.indices.exists({ index: this.indexName });
+
+      if (indexExists) {
+        console.log('✅ Index already exists, skipping full re-index');
+        console.log('📊 The watchdog will monitor for file changes incrementally');
+
+        // Get current document count
+        try {
+          const countResponse = await this.client.count({ index: this.indexName });
+          const count = countResponse.body?.count || countResponse.count || 0;
+          console.log(`📚 Current index contains ${count} document(s)`);
+        } catch (error) {
+          console.log('⚠️  Could not get document count:', error.message);
+        }
+      } else {
+        console.log('🆕 Index does not exist, performing initial indexing...');
+        // Run the indexer for first-time setup
+        await this.runIndexer();
+        console.log('✅ Initial indexing completed!');
       }
-
-      // Run the indexer
-      await this.runIndexer();
-
-      console.log('✅ Cold start indexing completed!');
     } catch (error) {
       console.error('❌ Cold start failed:', error.message);
       process.exit(1);

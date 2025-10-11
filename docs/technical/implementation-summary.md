@@ -88,7 +88,7 @@ A new advanced query parser that supports:
 
 Created comprehensive documentation:
 
-1. **FILTERING_GUIDE.md** - Complete guide covering:
+1. **[Filtering Guide](../user-guides/filtering-guide.md)** - Complete guide covering:
    - All filter types with detailed explanations
    - Syntax rules and examples
    - Use case examples
@@ -96,13 +96,13 @@ Created comprehensive documentation:
    - Troubleshooting tips
    - Technical details
 
-2. **QUICK_FILTER_REFERENCE.md** - Quick reference with:
+2. **[Quick Filter Reference](../user-guides/quick-filter-reference.md)** - Quick reference with:
    - Syntax cheat sheet
    - Quick examples
    - Common patterns
    - Tips and best practices
 
-3. **IMPLEMENTATION_SUMMARY.md** - This document
+3. **Implementation Summary** - This document
 
 ## Technical Architecture
 
@@ -167,9 +167,9 @@ filetype:pdf created:>2024-01-01 budget AND report
 
 ### Created:
 - `backend/queryParser.js` - Advanced query parser module (450+ lines)
-- `FILTERING_GUIDE.md` - Comprehensive user documentation
-- `QUICK_FILTER_REFERENCE.md` - Quick reference guide
-- `IMPLEMENTATION_SUMMARY.md` - This summary
+- `docs/user-guides/filtering-guide.md` - Comprehensive user documentation
+- `docs/user-guides/quick-filter-reference.md` - Quick reference guide
+- `docs/technical/implementation-summary.md` - This summary
 
 ### Modified:
 - `backend/indexer.js`

@@ -83,5 +83,5 @@ Always use: `YYYY-MM-DD` (e.g., `2024-01-15`)
 ## Need Help?
 
 - Click the help icon (?) in the search bar for inline help
-- See FILTERING_GUIDE.md for comprehensive documentation
+- See [Filtering Guide](filtering-guide.md) for comprehensive documentation
 - Examples are available in the UI help panel

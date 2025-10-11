@@ -312,8 +312,8 @@ Planned features for the filter panel:
 
 For issues, questions, or feature requests:
 - Check the inline help (? button)
-- Refer to FILTERING_GUIDE.md for query syntax
-- See QUICK_FILTER_REFERENCE.md for syntax cheat sheet
+- Refer to [Filtering Guide](filtering-guide.md) for query syntax
+- See [Quick Filter Reference](quick-filter-reference.md) for syntax cheat sheet
 - Report issues to the development team
 
 ---

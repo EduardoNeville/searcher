@@ -322,7 +322,7 @@ function chunkContent(content, chunkSize = 500000) {
   return chunks;
 }
 
-async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRetries: 3 }) {
+async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRetries: 3 }, incrementalMode = false) {
   try {
     const stats = fs.statSync(filePath);
 
@@ -330,11 +330,25 @@ async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRe
       return { success: false, reason: 'not_allowed' };
     }
 
-    // Log file size for large files
-    if (stats.size > 10 * 1024 * 1024) {
-      console.log(`Processing large file: ${relativePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
+    // In incremental mode, check if file needs re-indexing
+    if (incrementalMode) {
+      const checkResult = await shouldReindexFile(filePath, relativePath, stats);
+      if (!checkResult.shouldIndex) {
+        return { success: false, reason: 'unchanged', skipped: true };
+      }
+      // Log the reason for indexing
+      if (checkResult.reason === 'modified') {
+        console.log(`Re-indexing modified file: ${relativePath}`);
+      } else if (checkResult.reason === 'new') {
+        console.log(`Indexing new file: ${relativePath}`);
+      }
     } else {
-      console.log(`Processing: ${relativePath}`);
+      // Full index mode - log file size for large files
+      if (stats.size > 10 * 1024 * 1024) {
+        console.log(`Processing large file: ${relativePath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
+      } else {
+        console.log(`Processing: ${relativePath}`);
+      }
     }
 
     const content = await documentProcessor.extractText(filePath);
@@ -433,9 +447,10 @@ async function indexFile(filePath, relativePath, retryInfo = { attempt: 1, maxRe
   }
 }
 
-async function walkDirectory(dirPath, baseDir, placeholderFiles = []) {
+async function walkDirectory(dirPath, baseDir, placeholderFiles = [], incrementalMode = false) {
   let indexed = 0;
   let skipped = 0;
+  let unchanged = 0;
 
   try {
     const items = fs.readdirSync(dirPath);
@@ -469,11 +484,12 @@ async function walkDirectory(dirPath, baseDir, placeholderFiles = []) {
       }
 
       if (stats.isDirectory()) {
-        const result = await walkDirectory(itemPath, baseDir, placeholderFiles);
+        const result = await walkDirectory(itemPath, baseDir, placeholderFiles, incrementalMode);
         indexed += result.indexed;
         skipped += result.skipped;
+        unchanged += result.unchanged || 0;
       } else {
-        const result = await indexFile(itemPath, relativePath);
+        const result = await indexFile(itemPath, relativePath, { attempt: 1, maxRetries: 3 }, incrementalMode);
         if (result.success) {
           indexed++;
           if (indexed % 50 === 0) {
@@ -483,6 +499,8 @@ async function walkDirectory(dirPath, baseDir, placeholderFiles = []) {
           // Track placeholder files for retry
           placeholderFiles.push(result);
           skipped++;
+        } else if (result.skipped && result.reason === 'unchanged') {
+          unchanged++;
         } else {
           skipped++;
         }
@@ -492,7 +510,7 @@ async function walkDirectory(dirPath, baseDir, placeholderFiles = []) {
     console.error(`Error reading directory ${dirPath}:`, error.message);
   }
 
-  return { indexed, skipped, placeholderFiles };
+  return { indexed, skipped, unchanged, placeholderFiles };
 }
 
 async function retryPlaceholders(placeholderFiles, maxRetries = 2, delaySeconds = 30) {
@@ -515,7 +533,7 @@ async function retryPlaceholders(placeholderFiles, maxRetries = 2, delaySeconds 
 
     for (const fileInfo of placeholderFiles) {
       console.log(`  Retrying: ${fileInfo.relativePath}`);
-      const result = await indexFile(fileInfo.filePath, fileInfo.relativePath);
+      const result = await indexFile(fileInfo.filePath, fileInfo.relativePath, { attempt: attempt, maxRetries: maxRetries }, false);
 
       if (result.success) {
         indexed++;
@@ -586,8 +604,51 @@ async function deleteDocumentsForFolder(folderPath) {
   }
 }
 
+async function shouldReindexFile(filePath, relativePath, stats) {
+  try {
+    // Check if document exists in index
+    const searchResponse = await client.search({
+      index: INDEX_NAME,
+      size: 1,
+      body: {
+        query: {
+          term: {
+            'path.keyword': relativePath
+          }
+        }
+      }
+    });
+
+    const hits = searchResponse.body?.hits?.hits || searchResponse.hits?.hits || [];
+
+    if (hits.length === 0) {
+      // File not in index, needs indexing
+      return { shouldIndex: true, reason: 'new' };
+    }
+
+    // File exists, check if it has been modified
+    const existingDoc = hits[0]._source;
+    const existingModified = new Date(existingDoc.modified).getTime();
+    const currentModified = stats.mtime.getTime();
+
+    if (currentModified > existingModified) {
+      return { shouldIndex: true, reason: 'modified' };
+    }
+
+    // File hasn't changed
+    return { shouldIndex: false, reason: 'unchanged' };
+  } catch (error) {
+    // On error, assume we should index
+    return { shouldIndex: true, reason: 'error' };
+  }
+}
+
 async function main() {
   try {
+    // Check for command-line arguments
+    const args = process.argv.slice(2);
+    const fullReindex = args.includes('--full');
+
     // Load indexed folders first
     const folders = loadIndexedFolders();
     console.log(`\n📁 Configured folders (${folders.length}):`);
@@ -599,6 +660,12 @@ async function main() {
     if (indexInfo.existed) {
       // Index already exists - clean up documents from removed folders
       await cleanupRemovedFolders(folders);
+
+      if (fullReindex) {
+        console.log('\n🔄 Full re-index requested - will delete and re-index all documents');
+      } else {
+        console.log('\n📊 Incremental index mode - will only index new/modified files');
+      }
     }
 
     console.log('\nStarting file indexing...');
@@ -607,6 +674,7 @@ async function main() {
     let totalIndexed = 0;
     let totalSkipped = 0;
     let totalDeleted = 0;
+    let totalUnchanged = 0;
     const allPlaceholderFiles = [];
 
     // Index each folder
@@ -622,29 +690,43 @@ async function main() {
       console.log(`\n\n📂 Indexing: ${folder.name} (${baseDir})`);
       console.log(`   Maps to ${containerToHostPath(baseDir)} on host\n`);
 
-      // Delete all existing documents for this folder before re-indexing
-      // This ensures we don't have stale documents from deleted files
-      const deleted = await deleteDocumentsForFolder(baseDir);
-      totalDeleted += deleted;
+      // Only delete all documents if doing a full re-index or if index is new
+      if (fullReindex || !indexInfo.existed) {
+        const deleted = await deleteDocumentsForFolder(baseDir);
+        totalDeleted += deleted;
+      }
 
       const placeholderFiles = [];
-      const result = await walkDirectory(baseDir, baseDir, placeholderFiles);
+      const incrementalMode = indexInfo.existed && !fullReindex;
+      const result = await walkDirectory(baseDir, baseDir, placeholderFiles, incrementalMode);
 
       totalIndexed += result.indexed;
       totalSkipped += result.skipped;
+      totalUnchanged += result.unchanged || 0;
       allPlaceholderFiles.push(...placeholderFiles);
 
-      console.log(`\n   ✓ Folder complete: ${result.indexed} indexed, ${result.skipped} skipped`);
+      if (incrementalMode) {
+        console.log(`\n   ✓ Folder complete: ${result.indexed} indexed/updated, ${result.unchanged || 0} unchanged, ${result.skipped} skipped`);
+      } else {
+        console.log(`\n   ✓ Folder complete: ${result.indexed} indexed, ${result.skipped} skipped`);
+      }
     }
 
     const endTime = Date.now();
     const duration = (endTime - startTime) / 1000;
 
     console.log(`\n\n═══════════════════════════════════════════════════════`);
-    console.log(`Initial indexing completed in ${duration.toFixed(2)} seconds`);
-    console.log(`Documents deleted (stale): ${totalDeleted}`);
-    console.log(`Files indexed: ${totalIndexed}`);
-    console.log(`Files skipped: ${totalSkipped}`);
+    if (fullReindex || !indexInfo.existed) {
+      console.log(`Full indexing completed in ${duration.toFixed(2)} seconds`);
+      console.log(`Documents deleted (stale): ${totalDeleted}`);
+      console.log(`Files indexed: ${totalIndexed}`);
+      console.log(`Files skipped: ${totalSkipped}`);
+    } else {
+      console.log(`Incremental indexing completed in ${duration.toFixed(2)} seconds`);
+      console.log(`Files indexed/updated: ${totalIndexed}`);
+      console.log(`Files unchanged (skipped): ${totalUnchanged}`);
+      console.log(`Files skipped: ${totalSkipped}`);
+    }
     console.log(`Placeholder files detected: ${allPlaceholderFiles.length}`);
     console.log(`═══════════════════════════════════════════════════════`);
 
